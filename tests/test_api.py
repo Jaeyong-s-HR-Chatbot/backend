@@ -99,6 +99,86 @@ def test_personal_and_other_employee_intents_are_preserved(question, expected_in
     assert nodes.classify(state)["intent"] == expected_intent
 
 
+@pytest.mark.parametrize(
+    ("question", "expected_intent", "expected_tools"),
+    [
+        ("연락처는 01012345678이에요. 출장비 정산 언제 돼요?", "rule", []),
+        ("연락처 010 1234 5678, 010.1234.5678 둘 다 제 번호예요", "rule", []),
+        ("(010) 1234-5678이 제 번호예요", "rule", []),
+        (
+            "이서준(E1584), 010-1234-5678, seojun@nurirail.example, 계좌 "
+            "999-12-345678입니다. 경조금 신청하려고요",
+            "rule",
+            [],
+        ),
+        ("내 연차 몇 개 남았어?", "lookup", ["profile", "leave_balance"]),
+        ("제 사번 E1584인데 연차 몇 개 남았어요?", "lookup", ["profile", "leave_balance"]),
+        ("제 사번은 e1584예요. 급여 알려 주세요", "lookup", ["profile", "payroll"]),
+        ("이서준인데요, 복지포인트 얼마 남았어요?", "lookup", ["profile", "welfare_points"]),
+        ("내 신청 결재됐어?", "lookup", ["profile", "requests"]),
+        ("제 전화번호 010-1234-5678인데, 병가 때 진단서 필요해?", "rule", []),
+        ("E1412 연차 몇 개 남았어?", "refuse", []),
+        ("제 사번 E1584랑 동기 E1412 연차 비교해 줘", "refuse", []),
+        ("박지현 과장 연봉 얼마야?", "refuse", []),
+        ("팀장한테 폭언을 들었어요. 제 번호 010-1234-5678로 연락 주세요", "sensitive", []),
+        ("팀장한테 폭언 들은 이서준입니다.", "sensitive", []),
+        ("박지현 과장 연봉이 궁금한 이서준입니다.", "refuse", []),
+        ("제 번호는 010-1234-5678입니다. 성희롱 신고하고 싶어요", "sensitive", []),
+    ],
+)
+def test_identifier_intros_do_not_trigger_self_lookup(
+    question, expected_intent, expected_tools, monkeypatch
+):
+    lookup_calls = []
+
+    def fake_lookup(state):
+        lookup_calls.append(state["masked_question"])
+        profile = {
+            "부서": "신호팀",
+            "직위": "대리",
+            "직급": "4급",
+            "입사일": "2023-01-01",
+            "근속연수": 3,
+        }
+        return {
+            "lookup": {"기본정보": profile},
+            "tools_used": expected_tools,
+        }
+
+    monkeypatch.setattr(nodes, "lookup", fake_lookup)
+    state = run_pipeline("E1584", "employee", question, own_name="이서준")
+
+    assert state["intent"] == expected_intent
+    assert state.get("tools_used", []) == expected_tools
+    assert bool(lookup_calls) == bool(expected_tools)
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "내 신청 방법 알려 줘",
+        "내 신청하려면 어떤 서류가 필요해?",
+        "내일 신청하려고요",
+    ],
+)
+def test_future_application_questions_do_not_lookup(question, monkeypatch):
+    lookup_calls = []
+    monkeypatch.setattr(
+        nodes,
+        "lookup",
+        lambda state: lookup_calls.append(state["masked_question"]) or {
+            "lookup": {},
+            "tools_used": ["profile", "requests"],
+        },
+    )
+
+    state = run_pipeline("E1584", "employee", question, own_name="이서준")
+
+    assert state["intent"] == "rule"
+    assert state.get("tools_used", []) == []
+    assert lookup_calls == []
+
+
 def test_other_name_with_title_refused():
     r = ask("박지현 과장 연봉 얼마야?")
     assert r["refused"] is True
@@ -153,6 +233,7 @@ def test_cors():
 def test_local_ollama_disables_thinking(monkeypatch):
     monkeypatch.setattr(config, "LLM_BASE_URL", "http://localhost:11434/v1")
     monkeypatch.setattr(config, "LLM_MODEL", "qwen3.5:4b")
+    monkeypatch.setattr(config, "LLM_MAX_TOKENS", 256)
     request = {}
 
     def fake_post(url, **kwargs):
@@ -160,7 +241,10 @@ def test_local_ollama_disables_thinking(monkeypatch):
         request.update(kwargs)
         return SimpleNamespace(
             raise_for_status=lambda: None,
-            json=lambda: {"message": {"content": "연차휴가 답변"}},
+            json=lambda: {
+                "message": {"content": "연차휴가 답변"},
+                "done_reason": "stop",
+            },
         )
 
     monkeypatch.setattr(nodes.httpx, "post", fake_post)
@@ -172,7 +256,67 @@ def test_local_ollama_disables_thinking(monkeypatch):
     assert answer == "연차휴가 답변"
     assert request["url"] == "http://localhost:11434/api/chat"
     assert request["json"]["think"] is False
+    assert request["json"]["options"]["num_predict"] == 256
     assert "합치면 최대 18만원이에요." in request["json"]["messages"][1]["content"]
+
+
+def test_local_ollama_warns_when_answer_is_truncated(monkeypatch, caplog):
+    monkeypatch.setattr(config, "LLM_BASE_URL", "http://localhost:11434/v1")
+    monkeypatch.setattr(config, "LLM_MAX_TOKENS", 256)
+
+    def fake_post(url, **kwargs):
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {
+                "message": {"content": "잘린 답변"},
+                "done_reason": "length",
+            },
+        )
+
+    monkeypatch.setattr(nodes.httpx, "post", fake_post)
+    caplog.set_level("WARNING", logger="hr_chat")
+
+    answer = nodes._llm_answer({"masked_question": "연차 규정은?", "chunks": []})
+
+    assert answer == "잘린 답변"
+    assert "LLM_MAX_TOKENS=256" in caplog.text
+    assert "잘린 답변" not in caplog.text
+
+
+def test_chat_openai_uses_configured_max_tokens(monkeypatch):
+    monkeypatch.setattr(config, "LLM_BASE_URL", "https://llm.example.test/v1")
+    monkeypatch.setattr(config, "LLM_MAX_TOKENS", 321)
+    captured = {}
+
+    class FakePrompt:
+        @classmethod
+        def from_messages(cls, messages):
+            return cls()
+
+        def __or__(self, llm):
+            return SimpleNamespace(
+                invoke=lambda values: SimpleNamespace(content="답변")
+            )
+
+    class FakeChatOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "langchain_core.prompts",
+        SimpleNamespace(ChatPromptTemplate=FakePrompt),
+    )
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "langchain_openai",
+        SimpleNamespace(ChatOpenAI=FakeChatOpenAI),
+    )
+
+    answer = nodes._llm_answer({"masked_question": "질문", "chunks": []})
+
+    assert answer == "답변"
+    assert captured["max_tokens"] == 321
 
 
 def test_trip_expense_calculation():

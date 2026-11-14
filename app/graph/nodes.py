@@ -38,36 +38,88 @@ _TITLE = r"(?:사원|주임|대리|과장|차장|부장|팀장|본부장|님|씨
 _PRIVATE = r"(?:연봉|급여|월급|연차|수당|평가|인사고과|주민번호|계좌|주소|전화번호|휴직)"
 _OTHER_NAME = re.compile(rf"[가-힣]{{2,4}}\s?{_TITLE}(?:님)?(?:의|은|는|이|가)?\s?{_PRIVATE}")
 _EMP_ID = re.compile(r"(?<![A-Za-z0-9])[Ee]1\d{3}(?!\d)")
-_SELF = ["내 ", "나의", "제 ", "저의", "내가", "제가", "남은", "남았", "잔여", "나 연차", "저 연차"]
+_SELF = re.compile(
+    r"(?<![가-힣A-Za-z0-9])(?:내\s|나의|제\s|저의|내가|제가|나 연차|저 연차)"
+    r"|남은|남았|잔여"
+)
 _PERSONAL_IDENTIFIER_INTRO = re.compile(
     r"(?:제|내|저의|나의)\s*"
     r"(?:전화번호|번호|연락처|사번|이메일|메일|계좌번호|계좌|주민번호|카드번호)"
     r"\s*(?:은|는|이|가|을|를|의|에|으로|로)?\s*"
     r"\[(?:전화|본인사번|이메일|계좌|주민번호|카드)\]"
 )
+_PERSONAL_MASK_TAG = re.compile(
+    r"\[(?:전화|이메일|계좌|주민번호|카드|본인사번|본인이름)\]"
+)
+_IDENTIFIER_LABEL = re.compile(
+    r"(?:연락처|전화번호|번호|이메일|메일|계좌번호|계좌|주민번호|카드번호|사번)"
+)
+_SELF_IDENTIFIER_LABEL = re.compile(
+    r"(?:제|내|저의|나의)\s*(?:연락처|전화번호|번호|이메일|메일|계좌번호|계좌|주민번호|카드번호|사번)"
+)
+_IDENTIFIER_DECLARATION_END = re.compile(
+    r"(?:이에요|예요|이예요|입니다|이랍니다|거예요)\s*[.!?]*$"
+)
+_APPLICATION_STATUS = re.compile(
+    r"(?:신청|결재|승인|접수)\s*(?:현황|상태|내역|결과|여부|결재|승인|처리|됐|되었|완료)"
+    r"|(?:결재|승인)\s*(?:됐|되었|완료|여부|상태|결과)"
+)
+_FUTURE_APPLICATION = re.compile(
+    r"(?:신청|접수)\s*(?:하려고|하려면|하려는|하고자|할까|할까요|할\s*때|하고\s*싶|"
+    r"방법|절차|어떻게|하는\s*방법)"
+)
 _EVENT = ["결혼", "출산", "이사", "사망", "부고", "돌아가", "육아휴직", "입학", "퇴직"]
 _RULE_WORDS = ["규정", "기준", "조건", "받을 수", "어떻게", "방법", "절차", "계산", "왜"]
 _TOOL_WORDS = ["연차", "휴가 며칠 남", "복지포인트", "복지 포인트", "포인트", "급여", "월급", "실수령", "통상임금", "수당 얼마 나왔",
-               "가족수당", "부양가족", "신청", "결재", "서류", "교육", "이수"]   # app/tools.py의 조회 도구와 같은 단어
+               "가족수당", "부양가족", "교육", "이수"]   # app/tools.py의 조회 도구와 같은 단어
+
+
+def _strip_personal_identifier_declarations(question: str) -> str:
+    """의도 판정에서 단독 식별자 소개 절을 제외하고 나머지 질문은 보존한다."""
+    parts = re.split(r"(?<=[.!?;\n])", question)
+    kept = []
+    for part in parts:
+        has_personal_tag = bool(_PERSONAL_MASK_TAG.search(part))
+        introduces_identifier = (
+            bool(_IDENTIFIER_LABEL.search(part))
+            or bool(_SELF_IDENTIFIER_LABEL.search(part))
+            or "[본인이름]" in part
+        )
+        if (
+            has_personal_tag
+            and introduces_identifier
+            and _IDENTIFIER_DECLARATION_END.search(part.strip())
+        ):
+            continue
+        kept.append(part)
+    return "".join(kept)
 
 
 def classify(s: HRState) -> HRState:
     """TODO 교체: 규칙은 유지하고 애매한 것만 LLM 분류로 보완할지 결정. 인사팀(hr_admin) 전용 조회는 아직 없음"""
     q = s["masked_question"]
     intent_q = _PERSONAL_IDENTIFIER_INTRO.sub("", q)
+    intent_q = _strip_personal_identifier_declarations(intent_q)
     other_id = s.get("has_other_emp_id", False) or "[사번]" in q
-    has_tool = any(w in intent_q for w in _TOOL_WORDS)
-    is_self = any(w in intent_q for w in _SELF) or ("[본인사번]" in q and has_tool)
+    has_read_tool = any(w in intent_q for w in _TOOL_WORDS)
+    has_application_status = bool(_APPLICATION_STATUS.search(intent_q))
+    has_tool = has_read_tool or has_application_status
+    is_self = bool(_SELF.search(intent_q)) or ("[본인사번]" in q and has_tool)
+    future_application_only = (
+        bool(_FUTURE_APPLICATION.search(intent_q))
+        and not has_read_tool
+        and not has_application_status
+    )
     asks_rule = any(w in intent_q for w in _RULE_WORDS)
-    if any(w in intent_q for w in _SENSITIVE):
+    if any(w in q for w in _SENSITIVE):
         intent = "sensitive"
-    elif other_id or any(w in intent_q for w in _OTHER_PERSON) or _OTHER_NAME.search(intent_q):
+    elif other_id or any(w in q for w in _OTHER_PERSON) or _OTHER_NAME.search(q):
         intent = "refuse"          # 타인 조회·권한 밖
     elif is_self and has_tool and not asks_rule:
         intent = "lookup"          # 내 데이터만 보면 되는 질문 (연차 잔여, 급여, 신청 현황 등)
-    elif any(w in intent_q for w in _EVENT):
+    elif any(w in q for w in _EVENT):
         intent = "event"
-    elif is_self:
+    elif is_self and not future_application_only:
         intent = "both"            # 내 조건 + 규정 (조회 결과와 근거를 함께 봄)
     else:
         intent = "rule"
@@ -202,18 +254,28 @@ def _llm_answer(s: HRState) -> str:
                 ],
                 "stream": False,
                 "think": False,
-                "options": {"temperature": 0},
+                "options": {
+                    "temperature": 0,
+                    "num_predict": config.LLM_MAX_TOKENS,
+                },
             },
             timeout=config.LLM_TIMEOUT,
         )
         response.raise_for_status()
-        return _clean(response.json()["message"]["content"])
+        data = response.json()
+        if data.get("done_reason") == "length":
+            log.warning(
+                "Ollama 답변이 LLM_MAX_TOKENS=%d 에서 잘렸습니다.",
+                config.LLM_MAX_TOKENS,
+            )
+        return _clean(data["message"]["content"])
 
     from langchain_core.prompts import ChatPromptTemplate
     from langchain_openai import ChatOpenAI
 
     llm = ChatOpenAI(base_url=config.LLM_BASE_URL, api_key=config.LLM_API_KEY, model=config.LLM_MODEL,
-                     temperature=0, timeout=config.LLM_TIMEOUT, max_retries=1, max_tokens=600)
+                     temperature=0, timeout=config.LLM_TIMEOUT, max_retries=1,
+                     max_tokens=config.LLM_MAX_TOKENS)
     prompt = ChatPromptTemplate.from_messages([
         ("system", SYSTEM_PROMPT),
         ("human", "{user_prompt}"),

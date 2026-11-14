@@ -36,6 +36,8 @@ LLM_MODEL=qwen3.5:4b
 LLM_API_KEY=ollama
 ```
 
+로컬 4GB GPU에서는 모델이 CPU와 나눠 실행되어 느릴 수 있어요. `ollama ps`의 `PROCESSOR` 열에서 CPU/GPU 사용을 확인하세요. 로컬 실행은 기능 확인용이며, 응답 시간은 서버 환경에서 측정해요.
+
 ## 1. 실행 순서 (시연할 때마다)
 
 1. **PostgreSQL**: Windows 서비스로 켜져 있으면 그대로 돼요. (서비스 앱에서 `postgresql-x64-16` 실행 중인지 확인)

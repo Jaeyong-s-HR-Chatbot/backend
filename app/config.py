@@ -38,6 +38,7 @@ RULES_CHUNKS_PATH = _get("RULES_CHUNKS_PATH")
 
 USE_FAKE_LLM = not LLM_BASE_URL
 LLM_TIMEOUT = float(_get("LLM_TIMEOUT", "180"))   # 노트북에서 조문 5개를 읽으면 오래 걸릴 수 있어 넉넉하게
+LLM_MAX_TOKENS = int(_get("LLM_MAX_TOKENS", "600"))
 
 # 인사·규정 DB (PostgreSQL + pgvector). 비어 있으면 DB 없이 가짜 데이터로 동작
 #   예: postgresql://postgres:비밀번호@localhost:5432/hrdb
