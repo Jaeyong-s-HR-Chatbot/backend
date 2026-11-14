@@ -2,10 +2,13 @@ import hashlib
 import hmac
 import os
 
+import pytest
+
 os.environ["PSEUDO_KEY"] = "test-pseudo-key"
 
 from app import config  # noqa: E402
 from app.masking import mask_answer, mask_text, pseudonymize
+from masking_cases import MASK_CASES, NO_MASK_CASES, OWN_EMP_ID, OWN_NAME  # noqa: E402
 
 
 def test_masks_rrn_card_phone_email_and_accounts():
@@ -89,3 +92,26 @@ def test_pseudonym_normalizes_employee_id_and_uses_hmac_sha256():
 
     assert pseudonymize("e1584") == pseudonymize(" E1584 ")
     assert pseudonymize(" E1584 ") == f"P-{expected_digest[:12]}"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected", "description"),
+    MASK_CASES,
+    ids=[case[2] for case in MASK_CASES],
+)
+def test_masking_cases_mask_expected_tags(text, expected, description):
+    result = mask_text(text, own_emp_id=OWN_EMP_ID, own_name=OWN_NAME)
+
+    assert result.found == expected, description
+
+
+@pytest.mark.parametrize(
+    ("text", "description"),
+    NO_MASK_CASES,
+    ids=[case[1] for case in NO_MASK_CASES],
+)
+def test_masking_cases_preserve_non_pii(text, description):
+    result = mask_text(text, own_emp_id=OWN_EMP_ID, own_name=OWN_NAME)
+
+    assert result.text == text, description
+    assert result.found == {}, description

@@ -88,17 +88,25 @@ class MaskResult:
     found: dict[str, int] = field(default_factory=dict)
 
 
-_RRN = re.compile(r"(?<!\d)(\d{6})[-\s]?([1-8]\d{6})(?!\d)")
+_RRN = re.compile(r"(?<!\d)(\d{6})(?:\s*[-.]\s*|\s*)([1-8]\d{6})(?!\d)")
 _CARD = re.compile(r"(?<!\d)\d(?:[-\s]?\d){14,15}(?!\d)")
+_PHONE_SEPARATOR = r"(?:\s*[-.]\s*|\s*)"
 _PHONE = re.compile(
-    r"(?<![\dA-Za-z])(?:01[016789]|02|0[3-6][1-5])"
-    r"[- .]?\d{3,4}[- .]?\d{4}(?!\d)(?![-.]\d)"
+    r"(?<![\dA-Za-z])"
+    r"(?:\+82" + _PHONE_SEPARATOR + r"(?:10|2|[3-6][1-5])|"
+    r"\(?(?:01[016789]|02|0[3-6][1-5])\)?)"
+    + _PHONE_SEPARATOR + r"\d{3,4}" + _PHONE_SEPARATOR + r"\d{4}(?!\d)(?![-.]\d)"
 )
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _DASHED_ACCOUNT = re.compile(r"(?<![\d-])\d{2,6}-\d{2,6}-\d{2,7}(?![\d-])")
 _PLAIN_ACCOUNT = re.compile(r"(?<!\d)\d{10,14}(?!\d)")
-_ACCOUNT_CONTEXT = re.compile(r"계좌|통장|입금")
+_ACCOUNT_CONTEXT = re.compile(
+    r"계좌|통장|입금|국민(?:은행)?|신한은행|우리은행|하나은행|농협(?:은행)?|"
+    r"기업은행|카카오뱅크|토스뱅크|케이뱅크|우체국|새마을금고|SC제일은행|"
+    r"산업은행|수협은행|씨티은행"
+)
 _EMP_ID = re.compile(r"(?<![A-Za-z0-9])[Ee]\d{4}(?![A-Za-z0-9])")
+_PHONE_SHAPED_ACCOUNT = re.compile(r"^(?:\d{2}|\d{3})-\d{3,4}-\d{4}$")
 
 
 def _valid_rrn_date(value: str) -> bool:
@@ -147,7 +155,14 @@ def _mask(
         context = text[max(0, start - 16):min(len(text), end + 16)]
         return bool(_ACCOUNT_CONTEXT.search(context))
 
-    replace_matches(_DASHED_ACCOUNT, "계좌", lambda match: 10 <= len(_digits(match.group(0))) <= 14)
+    def dashed_account(match: re.Match) -> bool:
+        if not 10 <= len(_digits(match.group(0))) <= 14:
+            return False
+        if account_context(match):
+            return True
+        return not _PHONE_SHAPED_ACCOUNT.fullmatch(match.group(0))
+
+    replace_matches(_DASHED_ACCOUNT, "계좌", dashed_account)
     replace_matches(_PLAIN_ACCOUNT, "계좌", account_context)
 
     if include_identity:
