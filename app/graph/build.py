@@ -29,6 +29,8 @@ def run_pipeline(employee_id: str, role: str, question: str, own_name: str = "")
         s |= n.sensitive(s)
     elif s["intent"] == "refuse":
         s |= n.refuse(s)
+    elif not n.has_question_content(s["masked_question"]):
+        s |= n.refuse_no_question(s)
     else:
         if s["intent"] in ("lookup", "both", "event"):
             s |= n.lookup(s)
@@ -40,10 +42,13 @@ def run_pipeline(employee_id: str, role: str, question: str, own_name: str = "")
                 s |= n.retrieve(s)
                 s |= n.calc(s)
                 s |= n.generate(s)
+                s |= n.normalize_no_evidence(s)
+                if s.get("kind") == "refused":
+                    break
                 s |= n.verify(s)
                 if s["verified"]:
                     break
-        if not s.get("verified"):
+        if not s.get("verified") and s.get("kind") != "refused":
             s |= n.refuse(s)
 
     s |= n.mask_response(s)

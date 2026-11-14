@@ -60,6 +60,9 @@ _SELF_IDENTIFIER_LABEL = re.compile(
 _IDENTIFIER_DECLARATION_END = re.compile(
     r"(?:이에요|예요|이예요|입니다|이랍니다|거예요)\s*[.!?]*$"
 )
+_NO_QUESTION_CONTENT = re.compile(
+    r"^[\s\W_]*(?:(?:이에요|이예요|예요|입니다|이랍니다|거예요|거에요|인데요|이고요|인데|이고|이며)[\s\W_]*)*$"
+)
 _APPLICATION_STATUS = re.compile(
     r"(?:신청|결재|승인|접수)\s*(?:현황|상태|내역|결과|여부|결재|승인|처리|됐|되었|완료)"
     r"|(?:결재|승인)\s*(?:됐|되었|완료|여부|상태|결과)"
@@ -95,11 +98,19 @@ def _strip_personal_identifier_declarations(question: str) -> str:
     return "".join(kept)
 
 
+def _intent_question(question: str) -> str:
+    question = _PERSONAL_IDENTIFIER_INTRO.sub("", question)
+    return _strip_personal_identifier_declarations(question)
+
+
+def has_question_content(question: str) -> bool:
+    return not _NO_QUESTION_CONTENT.fullmatch(_intent_question(question))
+
+
 def classify(s: HRState) -> HRState:
     """TODO 교체: 규칙은 유지하고 애매한 것만 LLM 분류로 보완할지 결정. 인사팀(hr_admin) 전용 조회는 아직 없음"""
     q = s["masked_question"]
-    intent_q = _PERSONAL_IDENTIFIER_INTRO.sub("", q)
-    intent_q = _strip_personal_identifier_declarations(intent_q)
+    intent_q = _intent_question(q)
     other_id = s.get("has_other_emp_id", False) or "[사번]" in q
     has_read_tool = any(w in intent_q for w in _TOOL_WORDS)
     has_application_status = bool(_APPLICATION_STATUS.search(intent_q))
@@ -287,6 +298,27 @@ def _llm_answer(s: HRState) -> str:
 def generate(s: HRState) -> HRState:
     answer = _fake_answer(s) if config.USE_FAKE_LLM else _llm_answer(s)
     return {"answer": answer}
+
+
+def normalize_no_evidence(s: HRState) -> HRState:
+    if s.get("intent") == "lookup":
+        return {}
+    if not s.get("answer", "").startswith("규정에서 확인되지 않아요"):
+        return {}
+    return {
+        "answer": "규정에서 확인되지 않아요. 인사팀에 확인해 주세요.",
+        "kind": "refused",
+        "chunks": [],
+    }
+
+
+def refuse_no_question(s: HRState) -> HRState:
+    return {
+        "answer": "어떤 내용이 궁금한지 알려 주세요. 개인정보는 적지 않아도 돼요.",
+        "kind": "refused",
+        "chunks": [],
+        "tools_used": [],
+    }
 
 
 def mask_response(s: HRState) -> HRState:

@@ -179,6 +179,126 @@ def test_future_application_questions_do_not_lookup(question, monkeypatch):
     assert lookup_calls == []
 
 
+@pytest.mark.parametrize(
+    ("question", "expected_intent", "expected_generate"),
+    [
+        ("(010) 1234-5678이 제 번호예요", "rule", False),
+        ("연락처 010 1234 5678, 010.1234.5678 둘 다 제 번호예요", "rule", False),
+        ("주민번호 900101-1234567이고 카드는 4111-1111-1111-1111이에요", "rule", False),
+        ("제 사번은 E1584예요.", "rule", False),
+        ("연락처는 01012345678이에요. 출장비 정산 언제 돼요?", "rule", True),
+        ("제 사번은 e1584예요. 급여 알려 주세요", "lookup", True),
+        ("이서준인데요, 복지포인트 얼마 남았어요?", "lookup", True),
+        ("내 연차 몇 개 남았어?", "lookup", True),
+        ("병가는 1년에 며칠까지 쓸 수 있어요?", "rule", True),
+        ("팀장한테 폭언 들은 이서준입니다.", "sensitive", False),
+        ("박지현 과장 연봉이 궁금한 이서준입니다.", "refuse", False),
+    ],
+)
+def test_identifier_only_questions_stop_before_generation(
+    question, expected_intent, expected_generate, monkeypatch, caplog
+):
+    caplog.set_level("INFO", logger="hr_chat")
+    generate_calls = []
+    retrieve_calls = []
+    original_generate = nodes.generate
+    original_retrieve = nodes.retrieve
+
+    def track_generate(state):
+        generate_calls.append(state["masked_question"])
+        return original_generate(state)
+
+    def track_retrieve(state):
+        retrieve_calls.append(state["masked_question"])
+        return original_retrieve(state)
+
+    monkeypatch.setattr(nodes, "generate", track_generate)
+    monkeypatch.setattr(nodes, "retrieve", track_retrieve)
+    state = run_pipeline("E1584", "employee", question, own_name="이서준")
+
+    assert state["intent"] == expected_intent
+    assert bool(generate_calls) is expected_generate
+    if not expected_generate:
+        assert question not in caplog.text
+    if not expected_generate and expected_intent == "rule":
+        assert state["kind"] == "refused"
+        assert state["answer"] == "어떤 내용이 궁금한지 알려 주세요. 개인정보는 적지 않아도 돼요."
+        assert state.get("chunks") == []
+        assert state.get("tools_used") == []
+        assert retrieve_calls == []
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected_answer", "expected_kind", "expected_chunks"),
+    [
+        (
+            "규정에서 확인되지 않아요. 인사팀에 확인해 주세요. (제 9 조 제 3 항)",
+            "규정에서 확인되지 않아요. 인사팀에 확인해 주세요.",
+            "refused",
+            [],
+        ),
+        (
+            "규정에서 확인되지 않아요. 인사팀에 확인해 주세요. (1)",
+            "규정에서 확인되지 않아요. 인사팀에 확인해 주세요.",
+            "refused",
+            [],
+        ),
+        (
+            "병가는 연 60일까지예요. (취업규칙 제23조)",
+            "병가는 연 60일까지예요. (취업규칙 제23조)",
+            "answer",
+            ["r03-0026"],
+        ),
+        (
+            "병가는 연 60일까지예요. 규정에서 확인되지 않아요. 인사팀에 확인해 주세요.",
+            "병가는 연 60일까지예요. 규정에서 확인되지 않아요. 인사팀에 확인해 주세요.",
+            "answer",
+            ["r03-0026"],
+        ),
+    ],
+)
+def test_no_evidence_answer_is_normalized(
+    answer, expected_answer, expected_kind, expected_chunks, monkeypatch
+):
+    chunk = {
+        "id": "r03-0026",
+        "citation": "취업규칙 제25조(병가)",
+        "text": "계속 3일 이상의 병가는 진단서를 제출한다.",
+        "score": 0.9,
+    }
+    search_calls = []
+    monkeypatch.setattr(
+        nodes.retriever,
+        "search",
+        lambda *args, **kwargs: search_calls.append(args[0]) or [chunk],
+    )
+    monkeypatch.setattr(nodes, "_fake_answer", lambda state: answer)
+
+    state = run_pipeline("E1584", "employee", "병가 규정은?")
+
+    assert state["answer"] == expected_answer
+    assert state["kind"] == expected_kind
+    assert [c["id"] for c in state.get("chunks", [])] == expected_chunks
+    assert len(search_calls) == 1
+
+
+def test_no_evidence_normalization_does_not_change_lookup_answers(monkeypatch):
+    answer = "규정에서 확인되지 않아요. 인사팀에 확인해 주세요. (제 9 조 제 3 항)"
+    monkeypatch.setattr(
+        nodes,
+        "lookup",
+        lambda state: {"lookup": {"연차": {"연도": 2026}}, "tools_used": ["leave_balance"]},
+    )
+    monkeypatch.setattr(nodes, "_fake_answer", lambda state: answer)
+
+    state = run_pipeline("E1584", "employee", "내 연차 몇 개 남았어?")
+
+    assert state["intent"] == "lookup"
+    assert state["answer"] == answer
+    assert state["kind"] == "answer"
+    assert state.get("chunks", []) == []
+
+
 def test_other_name_with_title_refused():
     r = ask("박지현 과장 연봉 얼마야?")
     assert r["refused"] is True
