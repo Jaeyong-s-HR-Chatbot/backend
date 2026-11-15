@@ -1,5 +1,7 @@
 """python -m pytest -q tests/test_api.py  (DB·LLM 없이 가짜 모드로 실행)"""
+import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 os.environ["LLM_BASE_URL"] = ""          # 테스트는 항상 가짜 LLM
@@ -16,6 +18,9 @@ from app.graph.build import run_pipeline  # noqa: E402
 from app.main import app  # noqa: E402
 
 c = TestClient(app)
+RULES = json.loads(
+    (Path(__file__).parent / "fixtures" / "rules_calc.json").read_text(encoding="utf-8")
+)
 
 
 @pytest.fixture(autouse=True)
@@ -23,6 +28,7 @@ def use_fake_backend(monkeypatch):
     monkeypatch.setattr(config, "USE_DB", False)
     monkeypatch.setattr(config, "CHAT_LOG_DB", False)
     monkeypatch.setattr(config, "USE_FAKE_LLM", True)
+    monkeypatch.setattr(config, "CALC_TOOLS", False)
 
 
 def token(user="E1584"):
@@ -453,4 +459,90 @@ def test_trip_expense_calculation():
         "daily_allowance_and_meal": 100000,
         "lodging_cap": 80000,
         "maximum_total": 180000,
+    }
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "2023-01-01에 입사했는데 2026.11.12 기준 연차가 며칠이에요?",
+        "2023.01.01에 입사했는데 2026/11/12 기준 연차가 며칠이에요?",
+        "2023/01/01에 입사했는데 2026년 11월 12일 기준 연차가 며칠이에요?",
+        "2023년 1월 1일에 입사했는데 2026-11-12 기준 연차가 며칠이에요?",
+    ],
+)
+def test_calc_tools_on_calculates_annual_leave_from_question_dates(question, monkeypatch):
+    rules_path = Path(__file__).parent / "fixtures" / "rules_calc.json"
+    monkeypatch.setattr(config, "CALC_TOOLS", True)
+    monkeypatch.setattr(config, "RULES_PATH", str(rules_path))
+
+    result = nodes.calc({"masked_question": question})
+
+    assert result["calc"]["종류"] == "연차 일수"
+    assert result["calc"]["입력"] == {"입사일": "2023-01-01", "기준일": "2026-11-12"}
+    assert result["calc"]["결과"]["부여일수"] == 16
+
+
+def test_calc_tools_off_and_questions_without_explicit_hire_date_do_not_calculate(monkeypatch):
+    question = "2023-01-01에 입사했는데 2026.11.12 기준 연차가 며칠이에요?"
+    rules_path = Path(__file__).parent / "fixtures" / "rules_calc.json"
+    monkeypatch.setattr(config, "RULES_PATH", str(rules_path))
+
+    assert nodes.calc({"masked_question": question}) == {}
+    monkeypatch.setattr(config, "CALC_TOOLS", True)
+    assert nodes.calc({"masked_question": "내 연차 몇 개 남았어?"}) == {}
+    assert nodes.calc({"masked_question": "병가는 1년에 며칠까지 쓸 수 있어요?"}) == {}
+
+
+def test_calc_tools_requires_ordinary_wage_not_basic_pay(monkeypatch):
+    rules_path = Path(__file__).parent / "fixtures" / "rules_calc.json"
+    monkeypatch.setattr(config, "CALC_TOOLS", True)
+    monkeypatch.setattr(config, "RULES_PATH", str(rules_path))
+
+    basic = nodes.calc({
+        "masked_question": "기본급 3,200,000원이면 시간외 10시간 수당은 얼마예요?"
+    })["calc"]
+    ordinary = nodes.calc({
+        "masked_question": "통상임금 3,200,000원이면 시간외 10시간 수당은 얼마예요?"
+    })["calc"]
+
+    assert basic["입력 부족"] == {
+        "필요한 값": "통상임금",
+        "통상임금 구성": RULES["ordinary_wage"]["_status"],
+        "시간급 계산식": "통상임금 ÷ 월 소정근로시간 (209시간)",
+    }
+    assert ordinary["결과"]["합계"] == 229_660
+
+
+def test_calc_tools_accepts_million_won_and_night_holiday_hours(monkeypatch):
+    rules_path = Path(__file__).parent / "fixtures" / "rules_calc.json"
+    monkeypatch.setattr(config, "CALC_TOOLS", True)
+    monkeypatch.setattr(config, "RULES_PATH", str(rules_path))
+
+    result = nodes.calc({
+        "masked_question": "통상임금 320만원, 연장 10시간, 야간 4시간, 휴일 3시간 수당은?"
+    })["calc"]
+
+    assert result["결과"]["연장수당"] == 229_660
+    assert result["결과"]["야간가산"] == 30_620
+    assert result["결과"]["휴일수당"] == 68_890
+    assert result["결과"]["합계"] == 329_170
+
+
+@pytest.mark.parametrize("pay_label", ["통상임금", "기본급"])
+def test_calc_tools_rejects_holiday_hours_above_rule_limit(pay_label, monkeypatch):
+    rules_path = Path(__file__).parent / "fixtures" / "rules_calc.json"
+    monkeypatch.setattr(config, "CALC_TOOLS", True)
+    monkeypatch.setattr(config, "RULES_PATH", str(rules_path))
+    limit = nodes.calc_rules.holiday_hours_limit(RULES)
+    assert limit is not None
+
+    result = nodes.calc({
+        "masked_question": (
+            f"{pay_label} 3,200,000원이면 시간외 10시간, 휴일 {limit + 1}시간 수당은 얼마예요?"
+        )
+    })
+
+    assert result["calc"] == {
+        "입력 부족": f"휴일 {limit}시간 초과분의 배율이 기준표에 없음"
     }

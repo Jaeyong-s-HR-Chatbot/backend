@@ -1,0 +1,39 @@
+{
+  "annual_leave": {
+    "_status": "근로기준법 제60조 (회계연도 기준 간이 적용)",
+    "first_year_monthly": 1,
+    "first_year_max": 11,
+    "base": 15,
+    "add_every_years": 2,
+    "max": 25,
+    "half_day": 0.5
+  },
+  "overtime": {
+    "_status": "근로기준법 제56조 (연장·휴일 8시간 이내 1.5배, 야간 가산 0.5배). 시간급 = 통상임금 ÷ 209",
+    "monthly_hours": 209,
+    "overtime_rate": 1.5,
+    "night_extra_rate": 0.5,
+    "holiday_rate": 1.5
+  },
+  "family_allowance": {
+    "_status": "보수규정 시행세칙 제24조·별표 17",
+    "배우자": 30000,
+    "자녀": [50000, 80000, 120000],
+    "직계존속": 20000,
+    "child_age_limit": 19,
+    "parent_age_min_male": 60,
+    "parent_age_min_female": 55,
+    "non_child_max": 4,
+    "children_only_from_grade": 2
+  },
+  "ordinary_wage": {
+    "_status": "통상임금 = 기본급 + 직책수당 + 교대수당 + 장기근속수당"
+  },
+  "grades": {
+    "1": {"position": "부장", "base": 5400000},
+    "2": {"position": "차장", "base": 4300000},
+    "3": {"position": "과장", "base": 3550000},
+    "4": {"position": "대리", "base": 2950000},
+    "5": {"position": "사원", "base": 2450000}
+  }
+}

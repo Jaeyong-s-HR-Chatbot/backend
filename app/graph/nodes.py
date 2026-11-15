@@ -6,11 +6,14 @@
 import json
 import logging
 import re
+from datetime import date
+from decimal import Decimal
 from urllib.parse import urlsplit
 
 import httpx
 
 from .. import config
+from .. import calc_rules
 from ..fake_data import HR_RECORDS
 from ..masking import mask_answer, mask_text, pseudonymize
 from . import retriever
@@ -157,10 +160,76 @@ def retrieve(s: HRState) -> HRState:
 
 
 # ───────────── calc: 계산 Tool ─────────────
+_DATE_IN_QUESTION = re.compile(
+    r"(?<!\d)(?P<year>\d{4})(?:[./-](?P<month>\d{1,2})[./-](?P<day>\d{1,2})"
+    r"|년\s*(?P<kmonth>\d{1,2})\s*월\s*(?P<kday>\d{1,2})\s*일)(?!\d)"
+)
+_MONEY_IN_QUESTION = r"(?P<amount>(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*(?P<unit>만원|원)"
+_HOUR_VALUE = r"(\d+(?:\.\d+)?)\s*시간"
+_OVERTIME_HOURS = re.compile(
+    rf"(?:시간외(?:근무)?(?:\s*\(연장\))?|연장(?:근무)?)\s*"
+    rf"(?:시간(?:은|이|가)?\s*)?{_HOUR_VALUE}"
+)
+_NIGHT_HOURS = re.compile(rf"야간(?:근무)?\s*(?:시간(?:은|이|가)?\s*)?{_HOUR_VALUE}")
+_HOLIDAY_HOURS = re.compile(rf"휴일(?:근무)?\s*(?:시간(?:은|이|가)?\s*)?{_HOUR_VALUE}")
+
+
+def _question_dates(question: str) -> list[date] | None:
+    dates = []
+    for match in _DATE_IN_QUESTION.finditer(question):
+        month = match.group("month") or match.group("kmonth")
+        day = match.group("day") or match.group("kday")
+        try:
+            dates.append(date(int(match.group("year")), int(month), int(day)))
+        except ValueError:
+            return None
+    return dates
+
+
+def _labeled_amount(question: str, label: str) -> tuple[str, int | None]:
+    patterns = (
+        re.compile(rf"{re.escape(label)}\s*(?:은|이|가|으로|:)?\s*{_MONEY_IN_QUESTION}"),
+        re.compile(rf"{_MONEY_IN_QUESTION}\s*(?:의)?\s*{re.escape(label)}"),
+    )
+    matches = []
+    for pattern in patterns:
+        for match in pattern.finditer(question):
+            number = Decimal(match.group("amount").replace(",", ""))
+            if match.group("unit") == "만원":
+                number *= Decimal(10000)
+            if number != number.to_integral_value():
+                return "invalid", None
+            matches.append(int(number))
+    if len(matches) > 1:
+        return "ambiguous", None
+    if not matches:
+        return "missing", None
+    return "found", matches[0]
+
+
+def _hours(question: str) -> tuple[float, float, float] | None:
+    matches = (
+        _OVERTIME_HOURS.findall(question),
+        _NIGHT_HOURS.findall(question),
+        _HOLIDAY_HOURS.findall(question),
+    )
+    if len(matches[0]) != 1 or any(len(values) > 1 for values in matches):
+        return None
+    try:
+        return (
+            float(matches[0][0]),
+            float(matches[1][0]) if matches[1] else 0.0,
+            float(matches[2][0]) if matches[2] else 0.0,
+        )
+    except ValueError:
+        return None
+
+
 def calc(s: HRState) -> HRState:
     """출장비: 근거에 단가(rates)가 있으면 박·일수로 계산. TODO: 기준표(rules.json) 기반 계산 함수로 확장 (수당, 경조휴가 등)"""
-    trip = re.search(r"(\d+)\s*박\s*(\d+)\s*일", s["masked_question"])
-    if "출장" in s["masked_question"] and trip:
+    question = s["masked_question"]
+    trip = re.search(r"(\d+)\s*박\s*(\d+)\s*일", question)
+    if "출장" in question and trip:
         nights, days = (int(value) for value in trip.groups())
         for chunk in s.get("chunks", []):
             rates = chunk.get("rates")
@@ -176,6 +245,57 @@ def calc(s: HRState) -> HRState:
                     "lodging_cap": lodging_total,
                     "maximum_total": daily_total + lodging_total,
                 }}
+    if not config.CALC_TOOLS:
+        return {}
+    rules = calc_rules.load_rules(config.RULES_PATH)
+    if rules is None:
+        return {}
+
+    calculations = []
+    if "연차" in question and "입사" in question:
+        dates = _question_dates(question)
+        if dates is not None and len(dates) in (1, 2):
+            hire_date = dates[0]
+            reference_date = dates[1] if len(dates) == 2 else date.today()
+            result = calc_rules.annual_leave(hire_date, reference_date, rules)
+            if result is not None:
+                calculations.append(result)
+
+    if any(term in question for term in ("시간외", "연장", "야간", "휴일")):
+        hours = _hours(question)
+        if hours is not None:
+            ordinary_status, ordinary_wage = _labeled_amount(question, "통상임금")
+            basic_status, _ = _labeled_amount(question, "기본급")
+            if ordinary_status == "found" and basic_status == "missing":
+                result = calc_rules.overtime_pay(
+                    ordinary_wage, *hours, rules=rules
+                )
+                if result is not None:
+                    calculations.append(result)
+            elif ordinary_status == "missing" and basic_status == "found":
+                excess = calc_rules.holiday_hours_excess(hours[2], rules)
+                if excess is not None:
+                    calculations.append(excess)
+                else:
+                    ordinary = rules.get("ordinary_wage", {})
+                    overtime = rules.get("overtime", {})
+                    if (
+                        isinstance(ordinary, dict)
+                        and isinstance(ordinary.get("_status"), str)
+                        and isinstance(overtime, dict)
+                        and "monthly_hours" in overtime
+                    ):
+                        calculations.append({
+                            "입력 부족": {
+                                "필요한 값": "통상임금",
+                                "통상임금 구성": ordinary["_status"],
+                                "시간급 계산식": (
+                                    f"통상임금 ÷ 월 소정근로시간 ({overtime['monthly_hours']}시간)"
+                                ),
+                            }
+                        })
+    if len(calculations) == 1:
+        return {"calc": calculations[0]}
     return {}
 
 

@@ -55,3 +55,10 @@ EMBED_MODEL = _get("EMBED_MODEL", "BAAI/bge-m3")
 
 # 근거 검증: 검색 1위 점수가 이보다 낮으면 다시 검색하고, 그래도 낮으면 거절
 VERIFY_MIN_SCORE = float(_get("VERIFY_MIN_SCORE", "0.3"))
+
+# 계산 도구와 rules.json
+CALC_TOOLS = _get("CALC_TOOLS", "off").lower() in {"1", "true", "yes", "on"}
+RULES_PATH = _get(
+    "RULES_PATH",
+    str(Path(__file__).resolve().parents[2] / "DB" / "rules" / "rules.json"),
+)
