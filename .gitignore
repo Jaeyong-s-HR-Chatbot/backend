@@ -4,3 +4,5 @@ __pycache__/
 .venv/
 *.pem
 .rag_cache/
+# LLM classification response cache (evaluation only)
+eval/intent/cache/

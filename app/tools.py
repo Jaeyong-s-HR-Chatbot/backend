@@ -93,11 +93,20 @@ TOOL_KEYWORDS = [
 ]
 
 
-def run_lookups(emp_id: str, question: str) -> tuple[dict, list[str]]:
+def run_lookups(
+    emp_id: str,
+    question: str,
+    selected_tools: list[str] | None = None,
+) -> tuple[dict, list[str]]:
     """항상 기본 정보(profile)를 넣고, 질문 단어에 맞는 도구를 추가로 실행. (결과, 사용한 도구 이름) 반환"""
     out, used = {"기본정보": get_profile(emp_id)}, ["profile"]
     for words, name, fn in TOOL_KEYWORDS:
-        if any(w in question for w in words):
+        should_run = (
+            name in selected_tools
+            if selected_tools is not None
+            else any(w in question for w in words)
+        )
+        if should_run:
             r = fn(emp_id)
             if r:
                 out[{"leave_balance": "연차", "welfare_points": "복지포인트", "payroll": "급여", "family": "가족",

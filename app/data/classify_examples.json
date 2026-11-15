@@ -1,0 +1,180 @@
+{
+  "examples": [
+    {
+      "id": "rule-04-a",
+      "purpose": "label",
+      "question": "연차 사용 신청서는 언제 제출해야 해?",
+      "intent": "rule",
+      "tools": [],
+      "calc": null
+    },
+    {
+      "id": "rule-11-a",
+      "purpose": "label",
+      "question": "입사 3년차인데 연차 일수 계산해 줘",
+      "intent": "rule",
+      "tools": [],
+      "calc": {
+        "type": "annual_leave",
+        "slots": {
+          "service_years": 3
+        }
+      }
+    },
+    {
+      "id": "lookup-03-a",
+      "purpose": "label",
+      "question": "이번 달 내 급여 얼마 나왔어?",
+      "intent": "lookup",
+      "tools": [
+        "profile",
+        "payroll"
+      ],
+      "calc": null
+    },
+    {
+      "id": "lookup-06-a",
+      "purpose": "label",
+      "question": "내 입사일 알려 줘",
+      "intent": "lookup",
+      "tools": [
+        "profile"
+      ],
+      "calc": null
+    },
+    {
+      "id": "both-01-a",
+      "purpose": "label",
+      "question": "내 연차 잔여와 사용 기준을 같이 알려 줘",
+      "intent": "both",
+      "tools": [
+        "profile",
+        "leave_balance"
+      ],
+      "calc": null
+    },
+    {
+      "id": "both-14-b",
+      "purpose": "label",
+      "question": "내 부서와 광역시 1박 2일 출장비 지급 규정을 확인해 줘",
+      "intent": "both",
+      "tools": [
+        "profile"
+      ],
+      "calc": {
+        "type": "business_trip",
+        "slots": {
+          "nights": 1,
+          "days": 2,
+          "region": "광역시"
+        }
+      }
+    },
+    {
+      "id": "event-02-a",
+      "purpose": "label",
+      "question": "출산하면 회사에서 어떤 휴가와 지원을 신청할 수 있어?",
+      "intent": "event",
+      "tools": [
+        "profile"
+      ],
+      "calc": null
+    },
+    {
+      "id": "event-04-a",
+      "purpose": "label",
+      "question": "가족이 사망했을 때 경조휴가와 지원금 신청 방법은?",
+      "intent": "event",
+      "tools": [
+        "profile"
+      ],
+      "calc": null
+    },
+    {
+      "id": "sensitive-01-a",
+      "purpose": "label",
+      "question": "팀장한테 폭언을 들었는데 어떻게 해?",
+      "intent": "sensitive",
+      "tools": [],
+      "calc": null
+    },
+    {
+      "id": "sensitive-03-a",
+      "purpose": "label",
+      "question": "직장 내 괴롭힘을 겪고 있어요. 어디에 도움을 요청하죠?",
+      "intent": "sensitive",
+      "tools": [],
+      "calc": null
+    },
+    {
+      "id": "refuse-03-a",
+      "purpose": "label",
+      "question": "제 사번 [본인사번]랑 동기 [사번] 연차 비교해 줘",
+      "intent": "refuse",
+      "tools": [],
+      "calc": null
+    },
+    {
+      "id": "refuse-05-a",
+      "purpose": "label",
+      "question": "우리 팀장 연봉이 얼마인지 알려 줘",
+      "intent": "refuse",
+      "tools": [],
+      "calc": null
+    },
+    {
+      "id": "no_question-01-a",
+      "purpose": "label",
+      "question": "제 사번은 [본인사번]예요.",
+      "intent": "no_question",
+      "tools": [],
+      "calc": null
+    },
+    {
+      "id": "no_question-07-a",
+      "purpose": "label",
+      "question": "이메일 [이메일]이고 계좌는 [계좌]입니다.",
+      "intent": "no_question",
+      "tools": [],
+      "calc": null
+    },
+    {
+      "id": "rule-10-a",
+      "purpose": "calculation",
+      "question": "통상임금 3,200,000원이면 연장 10시간 수당은 얼마야?",
+      "intent": "rule",
+      "tools": [],
+      "calc": {
+        "type": "overtime",
+        "slots": {
+          "ordinary_wage": 3200000,
+          "overtime_hours": 10
+        }
+      }
+    },
+    {
+      "id": "rule-14-a",
+      "purpose": "calculation",
+      "question": "제 번호 [전화]인데, 직급 4급이고 부양가족은 배우자 1명과 8세 자녀 1명이야. 가족수당 계산해 줘",
+      "intent": "rule",
+      "tools": [],
+      "calc": {
+        "type": "family_allowance",
+        "slots": {
+          "grade": 4,
+          "family": [
+            {
+              "관계": "배우자",
+              "부양": true
+            },
+            {
+              "관계": "자녀",
+              "나이": 8,
+              "부양": true
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

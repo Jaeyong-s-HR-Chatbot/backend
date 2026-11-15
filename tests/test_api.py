@@ -29,6 +29,7 @@ def use_fake_backend(monkeypatch):
     monkeypatch.setattr(config, "CHAT_LOG_DB", False)
     monkeypatch.setattr(config, "USE_FAKE_LLM", True)
     monkeypatch.setattr(config, "CALC_TOOLS", False)
+    monkeypatch.setattr(config, "CLASSIFY_MODE", "rule")
 
 
 def token(user="E1584"):

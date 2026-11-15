@@ -16,6 +16,7 @@ from .. import config
 from .. import calc_rules
 from ..fake_data import HR_RECORDS
 from ..masking import mask_answer, mask_text, pseudonymize
+from . import llm_classify
 from . import retriever
 from .state import HRState
 
@@ -110,7 +111,7 @@ def has_question_content(question: str) -> bool:
     return not _NO_QUESTION_CONTENT.fullmatch(_intent_question(question))
 
 
-def classify(s: HRState) -> HRState:
+def _classify_rule(s: HRState) -> HRState:
     """TODO 교체: 규칙은 유지하고 애매한 것만 LLM 분류로 보완할지 결정. 인사팀(hr_admin) 전용 조회는 아직 없음"""
     q = s["masked_question"]
     intent_q = _intent_question(q)
@@ -140,15 +141,75 @@ def classify(s: HRState) -> HRState:
     return {"intent": intent}
 
 
+def classify(s: HRState) -> HRState:
+    if config.CLASSIFY_MODE == "rule":
+        return _classify_rule(s)
+
+    question = s["masked_question"]
+    rule_result = None
+    if config.CLASSIFY_MODE in {"hybrid", "assist"}:
+        rule_result = _classify_rule(s)
+        if rule_result["intent"] in {"sensitive", "refuse"}:
+            return rule_result
+        if not has_question_content(question):
+            return rule_result
+    elif not has_question_content(question):
+        return {"intent": "rule"}
+
+    result = llm_classify.classify(question, date.today())
+    if result is None:
+        log.warning("LLM 의도 분류에 실패해 규칙 결과로 대체합니다")
+        return rule_result or _classify_rule(s)
+
+    if result["intent"] in {"sensitive", "refuse"}:
+        return {
+            "intent": result["intent"],
+            "classifier_tools": [],
+            "classifier_calc": None,
+        }
+    if config.CLASSIFY_MODE == "assist":
+        # 의도와 조회 도구는 규칙 그대로 두고, LLM은 민감·타인 조회 보완과 계산 값 추출에만 써요
+        return {"intent": rule_result["intent"], "classifier_calc": result["calc"]}
+    return {
+        "intent": result["intent"],
+        "classifier_tools": result["tools"],
+        "classifier_calc": result["calc"],
+    }
+
+
 # ───────────── lookup: 본인 조회 ─────────────
 def lookup(s: HRState) -> HRState:
     """사번은 반드시 토큰에서 온 s['employee_id']만 사용. DB가 있으면 app/tools.py의 정해진 조회만 실행"""
     if config.USE_DB:
         from .. import tools
-        data, used = tools.run_lookups(s["employee_id"], s["masked_question"])
+        selected_tools = s.get("classifier_tools")
+        data, used = tools.run_lookups(
+            s["employee_id"],
+            s["masked_question"],
+            selected_tools=selected_tools if isinstance(selected_tools, list) else None,
+        )
     else:
-        data = dict(HR_RECORDS.get(s["employee_id"], {}))
-        used = list(data)
+        record = dict(HR_RECORDS.get(s["employee_id"], {}))
+        selected_tools = s.get("classifier_tools")
+        if isinstance(selected_tools, list):
+            tool_data = {
+                "profile": "기본정보",
+                "leave_balance": "연차",
+            }
+            requested_tools = ["profile", *(name for name in selected_tools if name != "profile")]
+            data = {
+                tool_data[name]: record[tool_data[name]]
+                for name in requested_tools
+                if name in tool_data and tool_data[name] in record
+            }
+            used = [
+                name
+                for name in requested_tools
+                if name in tool_data and tool_data[name] in record
+            ]
+        else:
+            data = record
+            used = list(data)
     return {"lookup": data, "tools_used": used}
 
 
@@ -225,9 +286,106 @@ def _hours(question: str) -> tuple[float, float, float] | None:
         return None
 
 
+def _calc_from_classifier(calc: dict, chunks: list, question: str) -> dict | None:
+    kind = calc["type"]
+    slots = calc["slots"]
+    if kind == "business_trip":
+        if not {"nights", "days", "region"} <= set(slots):
+            return None
+        nights, days = slots["nights"], slots["days"]
+        for chunk in chunks:
+            rates = chunk.get("rates")
+            if rates:
+                daily_allowance = rates["daily_allowance"] * days
+                meal_allowance = rates["meal_allowance"] * days
+                daily_total = daily_allowance + meal_allowance
+                lodging_total = rates["lodging_cap"] * nights
+                return {
+                    "daily_allowance": daily_allowance,
+                    "meal_allowance": meal_allowance,
+                    "daily_allowance_and_meal": daily_total,
+                    "lodging_cap": lodging_total,
+                    "maximum_total": daily_total + lodging_total,
+                }
+        return None
+
+    if kind == "annual_leave" and "service_years" in slots:
+        return {
+            "입력 부족": {
+                "필요한 값": "입사일(연·월·일)",
+                "안내": "연차는 회계연도 기준이라 입사 연도와 날짜가 있어야 계산할 수 있어요.",
+            }
+        }
+
+    rules = calc_rules.load_rules(config.RULES_PATH)
+    if rules is None:
+        return None
+    if kind == "annual_leave":
+        hire_date = slots.get("hire_date")
+        as_of = slots.get("as_of")
+        if not hire_date or not as_of:
+            return None
+        return calc_rules.annual_leave(hire_date, as_of, rules)
+    if kind == "overtime":
+        if (
+            "ordinary_wage" in slots
+            and "통상임금" not in question
+            and any(label in question for label in ("기본급", "월급"))
+        ):
+            slots = dict(slots)
+            slots["base_pay"] = slots.pop("ordinary_wage")
+        hour_slots = ("overtime_hours", "night_hours", "holiday_hours")
+        if "ordinary_wage" in slots:
+            if not any(key in slots for key in hour_slots):
+                return None
+            return calc_rules.overtime_pay(
+                slots["ordinary_wage"],
+                slots.get("overtime_hours", 0),
+                slots.get("night_hours", 0),
+                slots.get("holiday_hours", 0),
+                rules,
+            )
+        if "base_pay" in slots and any(key in slots for key in hour_slots):
+            excess = calc_rules.holiday_hours_excess(
+                slots.get("holiday_hours", 0), rules
+            )
+            if excess is not None:
+                return excess
+            ordinary = rules.get("ordinary_wage", {})
+            overtime = rules.get("overtime", {})
+            if (
+                isinstance(ordinary, dict)
+                and isinstance(ordinary.get("_status"), str)
+                and isinstance(overtime, dict)
+                and "monthly_hours" in overtime
+            ):
+                return {
+                    "입력 부족": {
+                        "필요한 값": "통상임금",
+                        "통상임금 구성": ordinary["_status"],
+                        "시간급 계산식": (
+                            f"통상임금 ÷ 월 소정근로시간 ({overtime['monthly_hours']}시간)"
+                        ),
+                    }
+                }
+        return None
+    if kind == "family_allowance":
+        if not {"grade", "family"} <= set(slots):
+            return None
+        return calc_rules.family_allowance(slots["grade"], slots["family"], rules)
+    return None
+
+
 def calc(s: HRState) -> HRState:
     """출장비: 근거에 단가(rates)가 있으면 박·일수로 계산. TODO: 기준표(rules.json) 기반 계산 함수로 확장 (수당, 경조휴가 등)"""
     question = s["masked_question"]
+    classifier_calc = s.get("classifier_calc")
+    if config.CALC_TOOLS and isinstance(classifier_calc, dict):
+        result = _calc_from_classifier(
+            classifier_calc, s.get("chunks", []), question
+        )
+        if result is not None:
+            return {"calc": result}
     trip = re.search(r"(\d+)\s*박\s*(\d+)\s*일", question)
     if "출장" in question and trip:
         nights, days = (int(value) for value in trip.groups())

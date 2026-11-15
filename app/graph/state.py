@@ -25,6 +25,8 @@ class HRState(TypedDict, total=False):
     has_other_emp_id: bool     # 질문에서 타인 사번을 감지했는지
     # classify
     intent: Intent
+    classifier_tools: list[str] | None
+    classifier_calc: dict | None
     # lookup / retrieve / calc
     lookup: dict               # 본인 조회 결과
     tools_used: list[str]      # 사용한 조회 도구 이름 (값은 로그에 남기지 않음)

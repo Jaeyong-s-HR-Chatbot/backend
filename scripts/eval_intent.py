@@ -4,6 +4,7 @@ import csv
 import json
 import re
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from time import perf_counter
 
@@ -13,10 +14,12 @@ if str(ROOT) not in sys.path:
 
 from app import calc_rules, config, tools
 from app.fake_data import SAMPLE_CHUNKS
-from app.graph import nodes
+from app.graph import llm_classify, nodes
 
 DATA_PATH = ROOT / "eval" / "intent" / "intent_cases.jsonl"
 REVIEW_PATH = ROOT / "eval" / "intent" / "intent_cases_review.csv"
+CACHE_PATH = ROOT / "eval" / "intent" / "cache"
+EXAMPLES_PATH = ROOT / "app" / "data" / "classify_examples.json"
 LABELS = ("rule", "lookup", "both", "event", "sensitive", "refuse", "no_question")
 REVIEW_COLUMNS = (
     "id",
@@ -154,8 +157,20 @@ def _business_trip_slots(question):
     }
 
 
-def _calc_prediction(question, masked_question):
-    result = nodes.calc({"masked_question": masked_question, "chunks": SAMPLE_CHUNKS}).get("calc")
+def _calc_prediction(question, masked_question, state=None):
+    if (
+        config.CLASSIFY_MODE != "rule"
+        and state is not None
+        and state.get("classifier_calc") is not None
+    ):
+        return state["classifier_calc"]
+    calc_state = {
+        "masked_question": masked_question,
+        "chunks": SAMPLE_CHUNKS,
+    }
+    if state is not None:
+        calc_state["classifier_calc"] = state.get("classifier_calc")
+    result = nodes.calc(calc_state).get("calc")
     if not isinstance(result, dict):
         return None
     kind = result.get("종류")
@@ -208,12 +223,19 @@ def _predict(case):
         state["masked_question"]
     ):
         predicted_intent = "no_question"
-    predicted_tools = _selected_tools(predicted_intent, state["masked_question"])
-    predicted_calc = _calc_prediction(case["question"], state["masked_question"])
+    classifier_tools = state.get("classifier_tools")
+    predicted_tools = (
+        classifier_tools
+        if isinstance(classifier_tools, list)
+        else _selected_tools(predicted_intent, state["masked_question"])
+    )
+    predicted_calc = _calc_prediction(
+        case["question"], state["masked_question"], state
+    )
     return predicted_intent, predicted_tools, predicted_calc
 
 
-def _metrics(cases, predictions, elapsed_ms):
+def _metrics(cases, predictions, elapsed_ms, llm_stats=None):
     matrix = {label: {predicted: 0 for predicted in LABELS} for label in LABELS}
     for case, (predicted, _, _) in zip(cases, predictions):
         matrix[case["intent"]][predicted] += 1
@@ -277,6 +299,13 @@ def _metrics(cases, predictions, elapsed_ms):
         "confusions": confusions[:3],
         "errors": errors,
         "average_ms": sum(elapsed_ms) / len(elapsed_ms) if elapsed_ms else 0.0,
+        "maximum_ms": max(elapsed_ms, default=0.0),
+        "json_failures": llm_stats.json_failures if llm_stats else 0,
+        "validation_failures": llm_stats.validation_failures if llm_stats else 0,
+        "llm_calls": llm_stats.calls if llm_stats else 0,
+        "cache_hits": llm_stats.cache_hits if llm_stats else 0,
+        "llm_errors": list(llm_stats.errors) if llm_stats else [],
+        "raw_json_failures": list(llm_stats.raw_json_failures) if llm_stats else [],
     }
 
 
@@ -331,32 +360,237 @@ def _markdown(split, cases, metrics):
     return "\n".join(lines) + "\n"
 
 
+def _pair_id(case_id):
+    match = re.fullmatch(r"([a-z_]+-\d{2})-[ab]", case_id)
+    if not match:
+        raise ValueError(f"{case_id}: pair 형식이 아닙니다.")
+    return match.group(1)
+
+
+def _scoring_cases(split):
+    cases = _read_cases()
+    with EXAMPLES_PATH.open(encoding="utf-8") as file:
+        examples_data = json.load(file)
+    examples = examples_data.get("examples", [])
+    by_id = {case["id"]: case for case in cases}
+    test_pairs = {
+        _pair_id(case["id"]) for case in cases if case["split"] == "test"
+    }
+    example_pairs = set()
+    for example in examples:
+        case_id = example.get("id")
+        if case_id not in by_id or by_id[case_id]["split"] != "dev":
+            raise ValueError(f"{case_id}: few-shot 예시는 dev 문장이어야 합니다.")
+        pair_id = _pair_id(case_id)
+        if pair_id in test_pairs:
+            raise ValueError(f"{pair_id}: few-shot 예시의 쌍이 test split과 겹칩니다.")
+        example_pairs.add(pair_id)
+    selected = (
+        cases
+        if split == "all"
+        else [case for case in cases if case["split"] == split]
+    )
+    excluded = [case for case in selected if _pair_id(case["id"]) in example_pairs]
+    scored = [case for case in selected if _pair_id(case["id"]) not in example_pairs]
+    return scored, excluded, [example["id"] for example in examples]
+
+
+def _run_mode(mode, cases):
+    config.CLASSIFY_MODE = mode
+    config.CALC_TOOLS = True
+    configured_timeout = config.CLASSIFY_TIMEOUT
+    config.CLASSIFY_TIMEOUT = min(configured_timeout, 30)
+    calc_rules.load_rules.cache_clear()
+    predictions = []
+    elapsed_ms = []
+    cache_context = (
+        llm_classify.evaluation_cache(CACHE_PATH)
+        if mode in {"assist", "hybrid", "llm"}
+        else nullcontext(None)
+    )
+    with cache_context as llm_stats:
+        try:
+            for case in cases:
+                started = perf_counter()
+                predictions.append(_predict(case))
+                elapsed_ms.append((perf_counter() - started) * 1000)
+        finally:
+            calc_rules.load_rules.cache_clear()
+            config.CLASSIFY_TIMEOUT = configured_timeout
+    metrics = _metrics(cases, predictions, elapsed_ms, llm_stats)
+    return predictions, metrics
+
+
+def _percent(value):
+    return "N/A" if value is None else f"{value * 100:.1f}%"
+
+
+def _comparison_markdown(cases, excluded, example_ids, results):
+    lines = [
+        "# 의도 분류 방식 비교 (dev)",
+        "",
+        "정답 데이터는 검수 전 초안",
+        "",
+        f"- dev 전체: {len(cases) + len(excluded)}문장",
+        f"- few-shot 예시 및 같은 쌍 제외: {len(excluded)}문장",
+        f"- 세 방식 공통 평가 집합: {len(cases)}문장",
+        "- test split은 측정하지 않았습니다.",
+        "",
+        "## 전체 지표",
+        "",
+        "| 방식 | 정확도 | sensitive 재현율 | refuse 재현율 | 도구 일치율 | 계산 종류 | 계산 값 | JSON 실패 | HTTP 호출 | 캐시 적중 | 평균 시간 | 최대 시간 |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for mode in ("rule", "assist", "hybrid", "llm"):
+        metrics = results[mode]["metrics"]
+        lines.append(
+            f"| {mode} | {_percent(metrics['accuracy'])} "
+            f"| {_percent(metrics['per_label']['sensitive']['recall'])} "
+            f"| {_percent(metrics['per_label']['refuse']['recall'])} "
+            f"| {metrics['tool_correct']}/{metrics['tool_count']} ({_percent(metrics['tool_accuracy'])}) "
+            f"| {metrics['calc_type_correct']}/{metrics['calc_count']} ({_percent(metrics['calc_type_accuracy'])}) "
+            f"| {metrics['calc_value_correct']}/{metrics['calc_count']} ({_percent(metrics['calc_value_accuracy'])}) "
+            f"| {metrics['json_failures']} "
+            f"| {metrics['llm_calls']} "
+            f"| {metrics['cache_hits']} "
+            f"| {metrics['average_ms']:.1f} ms "
+            f"| {metrics['maximum_ms']:.1f} ms |"
+        )
+
+    lines.extend(["", "## 라벨별 정밀도·재현율·F1", ""])
+    lines.append("| 라벨 | 방식 | 정밀도 | 재현율 | F1 | 문장 수 |")
+    lines.append("| --- | --- | ---: | ---: | ---: | ---: |")
+    for label in LABELS:
+        for mode in ("rule", "assist", "hybrid", "llm"):
+            item = results[mode]["metrics"]["per_label"][label]
+            lines.append(
+                f"| {label} | {mode} | {_percent(item['precision'])} "
+                f"| {_percent(item['recall'])} | {_percent(item['f1'])} | {item['count']} |"
+            )
+
+    def append_changes(title, rows, target):
+        lines.extend(["", f"## {title}", "", f"| id | 문장 | 정답 | rule | {target} |", "| --- | --- | --- | --- | --- |"])
+        if rows:
+            for case_id, question, expected, rule_prediction, target_prediction in rows:
+                safe_question = question.replace("|", "\\|").replace("\n", " ")
+                lines.append(
+                    f"| {case_id} | {safe_question} | {expected} | {rule_prediction} | {target_prediction} |"
+                )
+        else:
+            lines.append("| - | 해당 문장 없음 | - | - | - |")
+
+    rule_by_id = {
+        case["id"]: prediction[0]
+        for case, prediction in zip(cases, results["rule"]["predictions"])
+    }
+    for target in ("assist", "hybrid"):
+        target_by_id = {
+            case["id"]: prediction[0]
+            for case, prediction in zip(cases, results[target]["predictions"])
+        }
+        fixed = []
+        newly_wrong = []
+        for case in cases:
+            rule_prediction = rule_by_id[case["id"]]
+            target_prediction = target_by_id[case["id"]]
+            row = (
+                case["id"],
+                case["question"],
+                case["intent"],
+                rule_prediction,
+                target_prediction,
+            )
+            if rule_prediction != case["intent"] and target_prediction == case["intent"]:
+                fixed.append(row)
+            elif rule_prediction == case["intent"] and target_prediction != case["intent"]:
+                newly_wrong.append(row)
+        append_changes(f"{target}에서 고쳐진 문장", fixed, target)
+        append_changes(f"{target}에서 새로 틀린 문장", newly_wrong, target)
+
+    lines.extend(["", "## few-shot 예시와 제외 ID", ""])
+    lines.append(", ".join(f"`{case_id}`" for case_id in example_ids))
+    lines.extend(["", "## JSON 파싱 실패 출력", ""])
+    failures = [
+        (mode, question, raw)
+        for mode in ("assist", "hybrid", "llm")
+        for question, raw in results[mode]["metrics"]["raw_json_failures"]
+    ]
+    if failures:
+        for mode, question, raw in failures:
+            lines.extend(
+                [
+                    f"### {mode}",
+                    "",
+                    f"마스킹 질문: {question}",
+                    "",
+                    "```text",
+                    raw,
+                    "```",
+                    "",
+                ]
+            )
+    else:
+        lines.append("- JSON 파싱 실패 없음")
+    errors = [
+        (mode, error)
+        for mode in ("assist", "hybrid", "llm")
+        for error in results[mode]["metrics"]["llm_errors"]
+    ]
+    lines.extend(["", "## 호출 오류", ""])
+    lines.extend(
+        [f"- {mode}: {error}" for mode, error in errors]
+        if errors
+        else ["- HTTP 호출 오류 없음"]
+    )
+    return "\n".join(lines) + "\n"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--split", choices=("dev", "test", "all"), default="dev")
+    parser.add_argument("--mode", choices=("rule", "assist", "hybrid", "llm"), default="rule")
+    parser.add_argument("--compare", action="store_true", help="dev에서 네 방식을 같은 평가 집합으로 비교")
     parser.add_argument("--out", type=Path, help="마크다운 결과 저장 경로")
     parser.add_argument("--apply-review", action="store_true", help="검수 CSV 수정 칸을 JSONL에 반영")
     args = parser.parse_args()
 
+    if args.compare and (args.split != "dev" or args.mode != "rule"):
+        parser.error("--compare는 기본 --mode rule과 --split dev에서만 사용하세요.")
     if args.split == "test":
         print("경고: test 는 최종 비교 때 한 번만 재세요.", file=sys.stderr)
     if args.apply_review:
         _apply_review()
-    cases = [case for case in _read_cases() if args.split == "all" or case["split"] == args.split]
-    config.CALC_TOOLS = True
-    calc_rules.load_rules.cache_clear()
-    predictions = []
-    elapsed_ms = []
-    try:
-        for case in cases:
-            started = perf_counter()
-            predictions.append(_predict(case))
-            elapsed_ms.append((perf_counter() - started) * 1000)
-    finally:
-        calc_rules.load_rules.cache_clear()
-
-    metrics = _metrics(cases, predictions, elapsed_ms)
-    report = _markdown(args.split, cases, metrics)
+    if args.compare:
+        cases, excluded, example_ids = _scoring_cases("dev")
+        original_mode = config.CLASSIFY_MODE
+        results = {}
+        try:
+            for mode in ("rule", "assist", "hybrid", "llm"):
+                predictions, metrics = _run_mode(mode, cases)
+                results[mode] = {"predictions": predictions, "metrics": metrics}
+        finally:
+            config.CLASSIFY_MODE = original_mode
+        report = _comparison_markdown(cases, excluded, example_ids, results)
+    else:
+        cases, excluded, example_ids = _scoring_cases(args.split)
+        original_mode = config.CLASSIFY_MODE
+        try:
+            predictions, metrics = _run_mode(args.mode, cases)
+        finally:
+            config.CLASSIFY_MODE = original_mode
+        report = _markdown(args.split, cases, metrics)
+        if args.mode != "rule":
+            report = (
+                f"## mode={args.mode}; excluded={len(excluded)}; "
+                f"examples={','.join(example_ids)}\n\n"
+                + report
+                + "\n## LLM 실행 정보\n\n"
+                + f"- JSON 파싱 실패: {metrics['json_failures']}\n"
+                + f"- 응답 검증 실패: {metrics['validation_failures']}\n"
+                + f"- 실제 HTTP 호출: {metrics['llm_calls']}\n"
+                + f"- 캐시 적중: {metrics['cache_hits']}\n"
+                + f"- 문장당 최대 처리 시간: {metrics['maximum_ms']:.1f} ms\n"
+            )
     print(report, end="")
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
