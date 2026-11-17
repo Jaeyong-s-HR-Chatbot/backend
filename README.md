@@ -118,7 +118,7 @@ guard → classify ─┬─ rule ─────────────→ ret
 | 검색 고도화 | 기본은 키워드 + (선택) 벡터. `SEARCH_MODE=rag`면 옆 폴더 `RAG-taehyeon` 패키지(Dense + BM25 → RRF, 선택 재정렬)로 검색 | 재정렬 채택 확정, 임계값 보정. BM25만 켠 rag 검색은 "근거 없음" 거절이 약함 | 이재용 · 진태현 |
 | 권한 | 코드에서 사번을 토큰으로 고정, 개인정보 테이블은 읽지 않음 | 챗봇 전용 계정(`chatbot_ro`), RLS | 박규태 |
 | 로그 | HMAC-SHA256 가명 ID와 마스킹 질문·답변, 분류·근거·도구명·처리시간 저장. 조회 도구를 쓴 답변은 `answer_masked`를 비워 둠. [마스킹 안내](./docs/masking.md) 참고 | `.env`에 고정 `PSEUDO_KEY`를 안전하게 설정해야 재시작 후에도 가명 ID가 유지됨. "근거 없음"과 "권한 없음"을 구분하는 항목 추가 | 박규태 · 진태현 |
-| 인사팀 전용 조회 | 없음 (일반 직원과 같음) | 신청 현황·부서 통계 도구 | 진태현 |
+| 인사팀 전용 조회 | hr_admin이면 `graph/admin_classify.py`가 data / both / rule / unavailable / refuse로 분류하고, `admin_tools.py`의 집계 도구 17개(연차 사용률, 잔여 연차 명단, 휴직·정년·수습, 교육 이수율, 수당 총액 등)를 정해진 SQL로 실행. 표는 답변 뒤에 코드가 붙이고, 로그엔 도구 이름만 | 실제 Postgres에서 확인, 도구 고르기 LLM 보조, 출퇴근 기록(attendance) 기반 도구 | 진태현 |
 | 생애 이벤트 계획, 신청서 초안 | 없음 | 이후 | |
 
 검색기는 `search(query, k) -> [{id, citation, revised, text, score}]` 형식만 지키면 파이프라인을 안 고치고 바꿔 끼울 수 있어요.

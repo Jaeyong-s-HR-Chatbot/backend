@@ -1,7 +1,8 @@
 """파이프라인 단계 사이에 들고 다니는 값 (HRState). 팀 합의 대상이에요."""
 from typing import Literal, TypedDict
 
-Intent = Literal["rule", "lookup", "both", "event", "sensitive", "refuse"]
+Intent = Literal["rule", "lookup", "both", "event", "sensitive", "refuse",
+                 "data", "unavailable"]   # data·unavailable은 인사팀(hr_admin) 전용
 
 
 class Chunk(TypedDict, total=False):
@@ -27,6 +28,10 @@ class HRState(TypedDict, total=False):
     intent: Intent
     classifier_tools: list[str] | None
     classifier_calc: dict | None
+    sensitive_topic: bool      # 인사팀이 민감 주제를 물음 → 검색은 하되 로그는 [민감 주제 문의]로
+    admin_tool: str            # 인사팀 집계 도구 이름 (app/admin_tools.py)
+    admin_params: dict         # 그 도구의 인자 (질문에서 뽑은 기간·기준값)
+    admin_result: dict         # 집계 결과 {"기준", "건수", "표"}
     # lookup / retrieve / calc
     lookup: dict               # 본인 조회 결과
     tools_used: list[str]      # 사용한 조회 도구 이름 (값은 로그에 남기지 않음)

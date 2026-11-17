@@ -18,6 +18,7 @@ from ..fake_data import HR_RECORDS
 from ..masking import mask_answer, mask_text, pseudonymize
 from . import llm_classify
 from . import retriever
+from .admin_classify import classify_admin
 from .state import HRState
 
 log = logging.getLogger("hr_chat")
@@ -25,6 +26,7 @@ log = logging.getLogger("hr_chat")
 VERIFY_MIN_SCORE = config.VERIFY_MIN_SCORE   # 근거 점수가 이보다 낮으면 재검색 → 그래도 낮으면 거절
 MAX_RETRIES = 1
 LOOKUP_ANSWER_LOG_PLACEHOLDER = "[본인 조회 답변 · 내용 미저장]"
+ADMIN_ANSWER_LOG_PLACEHOLDER = "[인사팀 집계 답변 · 내용 미저장]"
 SENSITIVE_PSEUDO_LOG_PLACEHOLDER = "[민감 주제 · 가명 미저장]"
 
 def guard(s: HRState) -> HRState:
@@ -115,7 +117,7 @@ def has_question_content(question: str) -> bool:
 
 
 def _classify_rule(s: HRState) -> HRState:
-    """TODO 교체: 규칙은 유지하고 애매한 것만 LLM 분류로 보완할지 결정. 인사팀(hr_admin) 전용 조회는 아직 없음"""
+    """직원(employee) 규칙 분류. 인사팀(hr_admin)은 classify()에서 admin_classify로 먼저 빠져요"""
     q = s["masked_question"]
     intent_q = _intent_question(q)
     other_id = s.get("has_other_emp_id", False) or "[사번]" in q
@@ -145,6 +147,8 @@ def _classify_rule(s: HRState) -> HRState:
 
 
 def classify(s: HRState) -> HRState:
+    if s.get("role") == "hr_admin":                # 인사팀은 전용 분류 (역할은 토큰에서)
+        return classify_admin(s["masked_question"])
     if config.CLASSIFY_MODE == "rule":
         return _classify_rule(s)
 
@@ -214,6 +218,43 @@ def lookup(s: HRState) -> HRState:
             data = record
             used = list(data)
     return {"lookup": data, "tools_used": used}
+
+
+# ───────────── admin_lookup: 인사팀 집계 조회 ─────────────
+def admin_lookup(s: HRState) -> HRState:
+    """역할은 토큰에서 온 s['role']만 사용. DB가 있으면 app/admin_tools.py의 정해진 집계만 실행"""
+    tool, params = s["admin_tool"], s.get("admin_params", {})
+    if not config.USE_DB:
+        result = {"기준": {}, "건수": 0, "표": [], "안내": "DB가 연결되지 않아 집계 결과가 없어요."}
+    else:
+        from .. import admin_tools
+        try:
+            result = admin_tools.run_admin_tool(s.get("role", ""), tool, params)
+        except PermissionError as exc:
+            result = {"기준": {}, "건수": 0, "표": [], "안내": str(exc)}
+        except Exception as exc:
+            log.warning("집계 조회 실패 %s: %s", tool, type(exc).__name__)
+            result = {"기준": {}, "건수": 0, "표": [], "안내": "집계 조회 중 오류가 났어요. 잠시 뒤 다시 시도해 주세요."}
+    return {"admin_result": result, "tools_used": [f"admin:{tool}"]}
+
+
+def _admin_table(r: dict, max_rows: int = 10) -> str:
+    """집계 결과를 사람이 읽는 목록으로 (값은 DB 그대로)"""
+    if r.get("안내"):
+        return r["안내"]
+    rows = r.get("표", [])
+    cond = ", ".join(f"{k} {v}" for k, v in r.get("기준", {}).items())
+    head = f"조회 결과 {r.get('건수', len(rows))}건이에요." + (f" ({cond})" if cond else "")
+    if not rows:
+        return head
+    def cell(k, v):   # 사용률·이수율·변화율은 %로
+        return f"{k} {v * 100:.1f}%" if k.endswith("률") and isinstance(v, float) else f"{k} {v}"
+    lines = [head] + ["- " + " · ".join(cell(k, v) for k, v in row.items()) for row in rows[:max_rows]]
+    if r.get("부서별"):
+        lines.append("부서별: " + ", ".join(f"{k} {v}명" for k, v in r["부서별"].items()))
+    if r.get("건수", len(rows)) > max_rows:
+        lines.append(f"…외 {r.get('건수', len(rows)) - max_rows}건")
+    return "\n".join(lines)
 
 
 # ───────────── retrieve: 규정 검색 ─────────────
@@ -505,6 +546,11 @@ def _lookup_sentences(lk: dict) -> list[str]:
 
 def _fake_answer(s: HRState) -> str:
     lk, chunks = s.get("lookup", {}), s.get("chunks", [])
+    if s.get("admin_result") is not None:         # 인사팀: 표는 generate가 붙이므로 여기선 근거만
+        if s.get("intent") == "data" or not chunks:
+            return "집계 결과를 정리했어요."
+        top = chunks[0]
+        return top.get("canned") or f"[가짜 LLM] 가장 가까운 근거는 '{top['citation']}'이에요: {top['text'][:150]}"
     parts = _lookup_sentences(lk) if s.get("intent") in ("lookup", "both", "event") else []
     if s.get("intent") == "lookup" and not parts and lk.get("기본정보"):
         b = lk["기본정보"]
@@ -520,6 +566,17 @@ def _clean(text: str) -> str:
     return text.split("</think>")[-1].strip()
 
 
+ADMIN_PROMPT_ROWS = 30   # 집계 표를 LLM에 넘길 최대 행 수 (전체 표는 답변 뒤에 코드가 붙임)
+
+
+def _prompt_lookup(s: HRState) -> dict:
+    r = s.get("admin_result")
+    if r is None:
+        return s.get("lookup", {})
+    return {"인사팀 집계": {**r, "표": r.get("표", [])[:ADMIN_PROMPT_ROWS]},
+            "안내": "표의 숫자를 요약만 하고 명단을 다시 나열하지 마세요. 표는 답변 뒤에 따로 붙어요."}
+
+
 def _llm_answer(s: HRState) -> str:
     ctx = "\n\n".join(
         f"[{c['citation']}]\n{c['text']}"
@@ -528,7 +585,7 @@ def _llm_answer(s: HRState) -> str:
     )
     user_prompt = (
         f"[근거]\n{ctx or '(없음)'}\n\n"
-        f"[조회 결과]\n{json.dumps(s.get('lookup', {}), ensure_ascii=False)}\n\n"
+        f"[조회 결과]\n{json.dumps(_prompt_lookup(s), ensure_ascii=False, default=str)}\n\n"
         f"[계산 결과]\n{json.dumps(s.get('calc', {}), ensure_ascii=False)}\n\n"
         f"[질문]\n{s['masked_question']}"
     )
@@ -578,6 +635,8 @@ def _llm_answer(s: HRState) -> str:
 
 def generate(s: HRState) -> HRState:
     answer = _fake_answer(s) if config.USE_FAKE_LLM else _llm_answer(s)
+    if s.get("admin_result") is not None:          # 인사팀 집계 표는 LLM이 아니라 코드가 그대로 붙임
+        answer = f"{answer}\n\n{_admin_table(s['admin_result'])}".strip()
     return {"answer": answer}
 
 
@@ -620,6 +679,8 @@ def verify(s: HRState) -> HRState:
     """TODO 교체: 답변 숫자 ↔ 근거·계산 숫자 대조 + 리랭커 점수"""
     if s.get("intent") == "lookup":
         return {"verified": bool(s.get("lookup")) and bool(s.get("answer"))}
+    if s.get("intent") == "data":
+        return {"verified": s.get("admin_result") is not None and bool(s.get("answer"))}
     chunks = s.get("chunks", [])
     ok = bool(chunks) and chunks[0]["score"] >= VERIFY_MIN_SCORE and bool(s.get("answer"))
     return {"verified": ok, "retries": s.get("retries", 0) + (0 if ok else 1)}
@@ -633,8 +694,12 @@ def route_after_verify(s: HRState) -> str:
 
 # ───────────── refuse / sensitive ─────────────
 def refuse(s: HRState) -> HRState:
-    if s.get("intent") == "refuse":
+    if s.get("intent") == "refuse" and s.get("role") == "hr_admin":
+        msg = "주민번호·계좌·주소·연락처는 챗봇으로 조회할 수 없어요. 인사시스템에서 권한 절차를 거쳐 확인해 주세요."
+    elif s.get("intent") == "refuse":
         msg = "다른 직원의 정보나 권한 밖의 내용은 알려드릴 수 없어요. 필요하면 인사팀에 정식으로 요청해 주세요."
+    elif s.get("intent") == "unavailable":
+        msg = "이 데이터는 지금 챗봇이 조회할 수 있는 DB에 없어요. 담당 시스템(근태·인사시스템)에서 확인해 주세요."
     else:
         msg = "이 질문은 등록된 규정에서 근거를 찾지 못했어요. 정확한 내용은 인사팀에 확인해 주세요."
     return {"answer": msg, "kind": "refused", "chunks": []}
@@ -653,7 +718,8 @@ def sensitive(s: HRState) -> HRState:
 def write_log(s: HRState) -> HRState:
     """가명 ID와 마스킹한 내용만 콘솔·DB 로그에 저장한다."""
     kind = s.get("kind") or "answer"
-    question_masked = "[민감 주제 문의]" if s.get("intent") == "sensitive" else s["masked_question"]
+    hide = s.get("intent") == "sensitive" or s.get("sensitive_topic")   # sensitive_topic: 인사팀의 민감 주제 질문
+    question_masked = "[민감 주제 문의]" if hide else s["masked_question"]
     pii_found = dict(s.get("pii_found", {}))
     if s.get("intent") == "refuse":
         def mask_other_name(match: re.Match) -> str:
@@ -663,7 +729,11 @@ def write_log(s: HRState) -> HRState:
             return "[타인이름]" + match.group("title")
 
         question_masked = _LOG_OTHER_NAME.sub(mask_other_name, question_masked)
-    if s.get("tools_used"):
+    if hide:
+        answer_masked = None
+    elif s.get("admin_result") is not None:
+        answer_masked = ADMIN_ANSWER_LOG_PLACEHOLDER if s.get("answer") else None
+    elif s.get("tools_used"):
         answer_masked = LOOKUP_ANSWER_LOG_PLACEHOLDER if s.get("answer") else None
     else:
         answer_masked = s.get("answer_masked")
