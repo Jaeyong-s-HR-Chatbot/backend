@@ -24,6 +24,8 @@ log = logging.getLogger("hr_chat")
 
 VERIFY_MIN_SCORE = config.VERIFY_MIN_SCORE   # 근거 점수가 이보다 낮으면 재검색 → 그래도 낮으면 거절
 MAX_RETRIES = 1
+LOOKUP_ANSWER_LOG_PLACEHOLDER = "[본인 조회 답변 · 내용 미저장]"
+SENSITIVE_PSEUDO_LOG_PLACEHOLDER = "[민감 주제 · 가명 미저장]"
 
 def guard(s: HRState) -> HRState:
     result = mask_text(s["question"], own_emp_id=s["employee_id"], own_name=s.get("own_name"))
@@ -41,6 +43,7 @@ _OTHER_PERSON = ["다른 직원", "다른 사람", "남의 ", "옆팀", "옆 팀
 _TITLE = r"(?:사원|주임|대리|과장|차장|부장|팀장|본부장|님|씨)"
 _PRIVATE = r"(?:연봉|급여|월급|연차|수당|평가|인사고과|주민번호|계좌|주소|전화번호|휴직)"
 _OTHER_NAME = re.compile(rf"[가-힣]{{2,4}}\s?{_TITLE}(?:님)?(?:의|은|는|이|가)?\s?{_PRIVATE}")
+_LOG_OTHER_NAME = re.compile(rf"(?<![가-힣A-Za-z0-9])(?P<name>[가-힣]{{2,4}})(?P<title>\s*{_TITLE}(?:님)?)")
 _EMP_ID = re.compile(r"(?<![A-Za-z0-9])[Ee]1\d{3}(?!\d)")
 _SELF = re.compile(
     r"(?<![가-힣A-Za-z0-9])(?:내\s|나의|제\s|저의|내가|제가|나 연차|저 연차)"
@@ -651,11 +654,28 @@ def write_log(s: HRState) -> HRState:
     """가명 ID와 마스킹한 내용만 콘솔·DB 로그에 저장한다."""
     kind = s.get("kind") or "answer"
     question_masked = "[민감 주제 문의]" if s.get("intent") == "sensitive" else s["masked_question"]
+    pii_found = dict(s.get("pii_found", {}))
+    if s.get("intent") == "refuse":
+        def mask_other_name(match: re.Match) -> str:
+            if re.fullmatch(_TITLE, match.group("name")):
+                return match.group(0)
+            pii_found["타인이름"] = pii_found.get("타인이름", 0) + 1
+            return "[타인이름]" + match.group("title")
+
+        question_masked = _LOG_OTHER_NAME.sub(mask_other_name, question_masked)
+    if s.get("tools_used"):
+        answer_masked = LOOKUP_ANSWER_LOG_PLACEHOLDER if s.get("answer") else None
+    else:
+        answer_masked = s.get("answer_masked")
     payload = {
-        "user_pseudo_id": pseudonymize(s["employee_id"]),
+        "user_pseudo_id": (
+            SENSITIVE_PSEUDO_LOG_PLACEHOLDER
+            if s.get("intent") == "sensitive" and config.SENSITIVE_LOG_PSEUDO == "drop"
+            else pseudonymize(s["employee_id"])
+        ),
         "question_masked": question_masked,
-        "answer_masked": s.get("answer_masked") if not s.get("tools_used") else None,
-        "pii_found": s.get("pii_found", {}),
+        "answer_masked": answer_masked,
+        "pii_found": pii_found,
         "intent": s.get("intent"),
         "kind": kind,
         "cited_chunks": [c["id"] for c in s.get("chunks", [])[:3] if c.get("id")],

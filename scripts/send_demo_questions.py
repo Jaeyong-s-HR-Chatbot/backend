@@ -114,7 +114,7 @@ QUESTIONS = [
         "checks": {
             "intent": "lookup",
             "tools_used_nonempty": True,
-            "answer_null": True,
+            "answer_null": False,
         },
     },
 ]

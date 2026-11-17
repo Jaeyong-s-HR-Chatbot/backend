@@ -138,4 +138,4 @@ def test_personal_lookup_answer_is_not_stored(monkeypatch):
     )
     assert row is not None
     assert "leave_balance" in row["tools_used"]
-    assert row["answer_masked"] is None
+    assert row["answer_masked"] == "[본인 조회 답변 · 내용 미저장]"

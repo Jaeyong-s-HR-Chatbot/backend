@@ -24,6 +24,10 @@ if not PSEUDO_KEY:
     PSEUDO_KEY = secrets.token_hex(32)
     log.warning("PSEUDO_KEY가 없어 임시 키를 써요. 서버를 다시 켜면 가명 ID가 바뀌어요")
 CHAT_LOG_DB = _get("CHAT_LOG_DB", "true").lower() not in {"0", "false", "no", "off"}
+SENSITIVE_LOG_PSEUDO = _get("SENSITIVE_LOG_PSEUDO", "keep").lower()
+if SENSITIVE_LOG_PSEUDO not in {"keep", "drop"}:
+    log.warning("SENSITIVE_LOG_PSEUDO 값이 올바르지 않아 keep 방식으로 동작합니다")
+    SENSITIVE_LOG_PSEUDO = "keep"
 
 # 프론트 주소 (CORS). 쉼표로 여러 개
 CORS_ORIGINS = [o.strip() for o in _get("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
