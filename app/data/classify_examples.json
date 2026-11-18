@@ -71,23 +71,19 @@
       }
     },
     {
-      "id": "event-02-a",
+      "id": "out_of_scope-01-a",
       "purpose": "label",
-      "question": "출산하면 회사에서 어떤 휴가와 지원을 신청할 수 있어?",
-      "intent": "event",
-      "tools": [
-        "profile"
-      ],
+      "question": "오늘 서울 날씨 어때?",
+      "intent": "out_of_scope",
+      "tools": [],
       "calc": null
     },
     {
-      "id": "event-04-a",
+      "id": "out_of_scope-04-a",
       "purpose": "label",
-      "question": "가족이 사망했을 때 경조휴가와 지원금 신청 방법은?",
-      "intent": "event",
-      "tools": [
-        "profile"
-      ],
+      "question": "요즘 주식 뭐 사면 좋아?",
+      "intent": "out_of_scope",
+      "tools": [],
       "calc": null
     },
     {

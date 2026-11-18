@@ -96,7 +96,8 @@ def test_personal_identifier_intro_does_not_trigger_lookup(question):
         ("제 사번 [본인사번]인데, 연차 몇 개 남았어?", "lookup"),
         ("E1584 연차 몇 개 남았어?", "lookup"),
         ("[사번] 연차 몇 개 남았어?", "refuse"),
-        ("제가 결혼하는데 뭐 받을 수 있어요?", "event"),
+        ("제가 결혼하는데 뭐 받을 수 있어요?", "both"),   # 결혼축하금 생애 1회 한정
+        ("오늘 서울 날씨 어때?", "out_of_scope"),
     ],
 )
 def test_personal_and_other_employee_intents_are_preserved(question, expected_intent):

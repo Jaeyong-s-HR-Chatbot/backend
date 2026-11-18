@@ -80,7 +80,17 @@ _FUTURE_APPLICATION = re.compile(
     r"(?:신청|접수)\s*(?:하려고|하려면|하려는|하고자|할까|할까요|할\s*때|하고\s*싶|"
     r"방법|절차|어떻게|하는\s*방법)"
 )
-_EVENT = ["결혼", "출산", "이사", "사망", "부고", "돌아가", "육아휴직", "입학", "퇴직"]
+# 인사 규정·본인 인사 데이터와 관련된 단어. 하나도 없으면 out_of_scope (날씨·잡담·재테크 등)
+_HR_WORDS = [
+    "휴가", "연차", "휴직", "병가", "공가", "수당", "급여", "월급", "보수", "봉급", "상여", "임금", "연봉",
+    "퇴직", "복지", "포인트", "교육", "이수", "출장", "여비", "경조", "결혼", "출산", "육아", "돌봄",
+    "사망", "부고", "이사", "이전비", "입학", "규정", "징계", "근무", "야근", "당직", "승진", "평가",
+    "인사", "입사", "가족", "부양", "진단서", "결재", "승인", "소명", "정산", "통상", "시간외", "야간",
+    "휴일", "사번", "직급", "직원", "직장", "회사", "팀장", "팀원", "동료", "상사", "관리자", "업무",
+    "대화방", "모욕", "고충", "신청",
+]
+# 다른 조직의 제도를 묻는 질문 (우리 회사 규정으로 답할 수 없음)
+_OTHER_ORG = re.compile(r"공무원|공공기관|타사|다른\s*회사|남의\s*회사|대기업|삼성|현대|엘지|LG|SK|카카오|네이버")
 _RULE_WORDS = ["규정", "기준", "조건", "받을 수", "어떻게", "방법", "절차", "계산", "왜"]
 _TOOL_WORDS = ["연차", "휴가 며칠 남", "복지포인트", "복지 포인트", "포인트", "급여", "월급", "실수령", "통상임금", "수당 얼마 나왔",
                "가족수당", "부양가족", "교육", "이수"]   # app/tools.py의 조회 도구와 같은 단어
@@ -135,10 +145,13 @@ def _classify_rule(s: HRState) -> HRState:
         intent = "sensitive"
     elif other_id or any(w in q for w in _OTHER_PERSON) or _OTHER_NAME.search(q):
         intent = "refuse"          # 타인 조회·권한 밖
+    elif _OTHER_ORG.search(intent_q) or (
+        not any(w in intent_q for w in _HR_WORDS)
+        and not _PERSONAL_MASK_TAG.search(q)   # 개인정보 소개 문장은 기존대로 (질문 없음 처리)
+    ):
+        intent = "out_of_scope"    # 인사 규정과 무관하거나 다른 조직의 제도
     elif is_self and has_tool and not asks_rule:
         intent = "lookup"          # 내 데이터만 보면 되는 질문 (연차 잔여, 급여, 신청 현황 등)
-    elif any(w in q for w in _EVENT):
-        intent = "event"
     elif is_self and not future_application_only:
         intent = "both"            # 내 조건 + 규정 (조회 결과와 근거를 함께 봄)
     else:
@@ -551,7 +564,7 @@ def _fake_answer(s: HRState) -> str:
             return "집계 결과를 정리했어요."
         top = chunks[0]
         return top.get("canned") or f"[가짜 LLM] 가장 가까운 근거는 '{top['citation']}'이에요: {top['text'][:150]}"
-    parts = _lookup_sentences(lk) if s.get("intent") in ("lookup", "both", "event") else []
+    parts = _lookup_sentences(lk) if s.get("intent") in ("lookup", "both") else []
     if s.get("intent") == "lookup" and not parts and lk.get("기본정보"):
         b = lk["기본정보"]
         parts.append(f"{b.get('부서', '')} {b.get('직위', '')}({b.get('직급', '')}), 입사일 {b.get('입사일', '')}, 근속 {b.get('근속연수', '')}년이에요.")
@@ -655,6 +668,15 @@ def normalize_no_evidence(s: HRState) -> HRState:
 def refuse_no_question(s: HRState) -> HRState:
     return {
         "answer": "어떤 내용이 궁금한지 알려 주세요. 개인정보는 적지 않아도 돼요.",
+        "kind": "refused",
+        "chunks": [],
+        "tools_used": [],
+    }
+
+
+def out_of_scope(s: HRState) -> HRState:
+    return {
+        "answer": "저는 회사 인사 규정과 본인 인사 정보만 안내해요. 휴가·급여·복지·출장 같은 인사 관련 질문을 해 주세요.",
         "kind": "refused",
         "chunks": [],
         "tools_used": [],

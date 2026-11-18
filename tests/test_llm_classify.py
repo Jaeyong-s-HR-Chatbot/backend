@@ -388,7 +388,7 @@ def test_few_shot_examples_are_dev_only_masked_and_pair_disjoint_from_test():
         "rule": 2,
         "lookup": 2,
         "both": 2,
-        "event": 2,
+        "out_of_scope": 2,
         "sensitive": 2,
         "refuse": 2,
         "no_question": 2,

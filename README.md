@@ -56,7 +56,7 @@ VITE_USE_MOCK=false
 ```
 guard → classify ─┬─ rule ─────────────→ retrieve → calc → generate → verify ─┬─ 통과 → log
                   ├─ lookup → lookup ──────────────────→ generate             ├─ 근거 부족 → retrieve (1회)
-                  ├─ both/event → lookup → retrieve                            └─ 그래도 실패 → refuse → log
+                  ├─ both ──→ lookup → retrieve                                └─ 그래도 실패 → refuse → log
                   ├─ sensitive → sensitive → log
                   └─ refuse(타인 조회) → refuse → log
 ```
@@ -64,7 +64,7 @@ guard → classify ─┬─ rule ─────────────→ ret
 | 단계 | 하는 일 |
 | --- | --- |
 | `guard` | 질문의 개인정보를 태그로 가려요. 이후 단계와 로그는 가려진 질문만 써요 |
-| `classify` | 키워드 규칙으로 의도를 나눠요 (`rule` / `lookup` / `both` / `event` / `sensitive` / `refuse`) |
+| `classify` | 키워드 규칙으로 의도를 나눠요 (`rule` / `lookup` / `both` / `sensitive` / `refuse` / `out_of_scope`). `out_of_scope`는 안내 후 종료 |
 | `lookup` | 본인 데이터를 정해진 SQL로 조회해요 |
 | `retrieve` | 규정 조각을 검색해요 |
 | `calc` | 근거에 단가가 있으면 금액을 계산해요 (지금은 출장비만) |

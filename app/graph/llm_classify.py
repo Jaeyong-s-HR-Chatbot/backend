@@ -17,7 +17,7 @@ from .. import config, tools
 
 log = logging.getLogger("hr_chat")
 
-INTENTS = ("rule", "lookup", "both", "event", "sensitive", "refuse")
+INTENTS = ("rule", "lookup", "both", "sensitive", "refuse", "out_of_scope")
 CALC_TYPES = ("annual_leave", "overtime", "family_allowance", "business_trip")
 TOOL_NAMES = ("profile", *(name for _, name, _ in tools.TOOL_KEYWORDS))
 OUTPUT_LIMIT = 512
@@ -88,12 +88,15 @@ def _examples() -> list[dict]:
 def _system_prompt(today: date) -> str:
     guide_summary = """의도는 질문의 목적에 따라 고릅니다.
 - rule: 규정·절차·조건만으로 답함. both: 본인 자료와 규정 근거가 모두 필요함.
-- lookup: 로그인한 본인의 저장 데이터만 확인함. event: 결혼·출산·이사·사망·육아휴직·퇴직 등 생애 이벤트가 중심임.
+- lookup: 로그인한 본인의 저장 데이터만 확인함.
+- out_of_scope: 인사 규정·본인 인사 데이터와 관계없음 (날씨, 잡담, 재테크, 사내 IT·총무, 다른 조직의 제도 등).
 - sensitive: 직장 내 괴롭힘·성희롱·폭언 등 피해·고충을 알리거나 도움을 구함.
 - refuse: 다른 직원의 개인정보·급여·인사정보 등 권한 밖 자료를 요구함.
 - no_question은 호출 전에 처리하므로 출력하지 않습니다.
 경계: 일반 제도 설명은 rule, 본인 잔액까지 기준과 대조하면 both. 저장된 신청 상태는 lookup, 앞으로 신청할 방법·서류는 rule.
-생애 이벤트에 따른 휴가·지원·신청은 event, 이벤트와 무관한 본인 자료+일반 규정 조합은 both입니다.
+결혼·출산·사망·이사·육아휴직·퇴직 같은 생애 이벤트도 주제가 아니라 필요한 것으로 나눕니다: 규정만 필요하면 rule, 본인 자료도 필요하면 both.
+우리 회사 인사 규정으로 답하는 질문이면 rule, 공무원·다른 회사 제도나 인사와 무관한 회사 일은 out_of_scope입니다.
+가족수당 금액·내역은 payroll, 부양가족 등록 자료는 family입니다.
 민감 단어만으로 sensitive라 하지 않습니다. 징계 규정의 절차처럼 중립적으로 규정만 묻는 것은 rule입니다.
 사용 도구: profile, leave_balance, welfare_points, payroll, family, requests, training. 본인 조회가 필요하면 profile을 포함합니다.
 계산 슬롯:
@@ -352,10 +355,10 @@ def _validate_response(raw: str, today: date) -> dict | None:
         "tools": selected_tools,
         "calc": _validate_calc(payload["calc"], today),
     }
-    if result["intent"] in {"lookup", "both", "event"} and result["tools"] is not None:
+    if result["intent"] in {"lookup", "both"} and result["tools"] is not None:
         if "profile" not in result["tools"]:
             result["tools"].insert(0, "profile")
-    if result["intent"] in {"sensitive", "refuse"}:
+    if result["intent"] in {"sensitive", "refuse", "out_of_scope"}:
         result["tools"] = []
         result["calc"] = None
     return result

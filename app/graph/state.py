@@ -1,7 +1,7 @@
 """파이프라인 단계 사이에 들고 다니는 값 (HRState). 팀 합의 대상이에요."""
 from typing import Literal, TypedDict
 
-Intent = Literal["rule", "lookup", "both", "event", "sensitive", "refuse",
+Intent = Literal["rule", "lookup", "both", "sensitive", "refuse", "out_of_scope",
                  "data", "unavailable"]   # data·unavailable은 인사팀(hr_admin) 전용
 
 
@@ -44,4 +44,4 @@ class HRState(TypedDict, total=False):
     verified: bool
     latency_ms: int
     # 응답
-    kind: Literal["answer", "refused", "sensitive"]
+    kind: Literal["answer", "refused", "sensitive"]   # out_of_scope는 refused로 안내
