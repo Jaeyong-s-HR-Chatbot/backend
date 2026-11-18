@@ -29,7 +29,7 @@ _JOSA = re.compile(r"(으로|에서|에게|까지|부터|이랑|하고|은|는|�
 def _cite(doc_name, article, title):
     art = (article or "").strip()
     t = (title or "").strip()
-    return f"{doc_name} {art}" + (f"({t[:20]})" if t and art.startswith("제") else "")
+    return f"{doc_name} {art}" + (f"({t[:20]})" if t and art.startswith(("제", "별지")) else "")
 
 
 @lru_cache(maxsize=1)
@@ -76,7 +76,7 @@ def _stem(w: str) -> str:
     return w
 
 
-_EVENT_TERMS = {"결혼": "청원휴가 경조", "출산": "출산휴가 배우자 출산", "사망": "청원휴가 조위금", "돌아가": "청원휴가 조위금",
+_EVENT_TERMS = {"결혼": "청원휴가 경조 결혼축하금 경조비", "출산": "출산휴가 배우자 출산", "사망": "청원휴가 조위금", "돌아가": "청원휴가 조위금",
                 "부고": "청원휴가 조위금", "이사": "이전비", "퇴직": "퇴직금"}
 
 

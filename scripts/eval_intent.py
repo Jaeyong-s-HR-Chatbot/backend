@@ -20,7 +20,8 @@ DATA_PATH = ROOT / "eval" / "intent" / "intent_cases.jsonl"
 REVIEW_PATH = ROOT / "eval" / "intent" / "intent_cases_review.csv"
 CACHE_PATH = ROOT / "eval" / "intent" / "cache"
 EXAMPLES_PATH = ROOT / "app" / "data" / "classify_examples.json"
-LABELS = ("rule", "lookup", "both", "event", "sensitive", "refuse", "no_question")
+LABELS = ("rule", "lookup", "both", "sensitive", "refuse", "no_question", "out_of_scope")
+ID_PREFIXES = (*LABELS, "event")   # event 라벨은 2026-11-18 폐지, 문장 id 앞부분에만 남음
 REVIEW_COLUMNS = (
     "id",
     "split",
@@ -82,15 +83,15 @@ def _validate_dataset(cases):
     for case in cases:
         label_counts[case["intent"]][case["split"]] += 1
         match = re.fullmatch(r"([a-z_]+)-(\d{2})-[ab]", case["id"])
-        if not match or match.group(1) not in LABELS:
+        if not match or match.group(1) not in ID_PREFIXES:
             raise ValueError(f"{case['id']}: pair 형식이 아닙니다.")
         reviewed_labels |= match.group(1) != case["intent"]
         pair_id = f"{match.group(1)}-{match.group(2)}"
         previous = pair_splits.setdefault(pair_id, case["split"])
         if previous != case["split"]:
             raise ValueError(f"{pair_id}: 변형 문장이 서로 다른 split에 있습니다.")
-    if len(cases) < 140 or len(cases) > 160:
-        raise ValueError(f"데이터 문장 수가 140~160 범위가 아닙니다: {len(cases)}")
+    if len(cases) < 140 or len(cases) > 200:
+        raise ValueError(f"데이터 문장 수가 140~200 범위가 아닙니다: {len(cases)}")
     if not reviewed_labels:
         for label, counts in label_counts.items():
             if sum(counts.values()) < 15 or counts != {"dev": 12, "test": 8}:
@@ -201,11 +202,11 @@ def _calc_prediction(question, masked_question, state=None):
 
 
 def _selected_tools(intent, question):
-    if intent not in {"lookup", "both", "event"}:
+    if intent not in {"lookup", "both"}:
         return []
     selected = ["profile"]
     for keywords, name, _ in tools.TOOL_KEYWORDS:
-        if any(word in question for word in keywords):
+        if tools.tool_matches(name, keywords, question):
             selected.append(name)
     return selected
 

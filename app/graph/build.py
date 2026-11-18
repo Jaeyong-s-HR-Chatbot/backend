@@ -3,8 +3,9 @@
 직원(employee)
 guard → classify ─┬─ rule ──────────────→ retrieve → calc → generate → verify ─┬─ 통과 → log
                   ├─ lookup ─→ lookup ─────────────────────→ generate          ├─ 근거 부족 → 다시 검색 (1회)
-                  ├─ both/event → lookup → retrieve                             └─ 그래도 실패 → refuse → log
+                  ├─ both ──→ lookup → retrieve                                 └─ 그래도 실패 → refuse → log
                   ├─ sensitive → sensitive → log
+                  ├─ out_of_scope (인사 규정과 무관) → 안내 → log
                   └─ refuse (타인 조회) → refuse → log
 
 인사팀(hr_admin, 역할은 토큰에서) — classify가 admin_classify로 분류
@@ -40,8 +41,10 @@ def run_pipeline(employee_id: str, role: str, question: str, own_name: str = "")
         s |= n.refuse(s)
     elif not n.has_question_content(s["masked_question"]):
         s |= n.refuse_no_question(s)
+    elif s["intent"] == "out_of_scope":
+        s |= n.out_of_scope(s)
     else:
-        if s["intent"] in ("lookup", "both", "event") and s.get("role") != "hr_admin":
+        if s["intent"] in ("lookup", "both") and s.get("role") != "hr_admin":
             s |= n.lookup(s)
         if s["intent"] in ("data", "both") and s.get("admin_tool"):
             s |= n.admin_lookup(s)
