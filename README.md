@@ -80,7 +80,7 @@ guard → classify ─┬─ rule ─────────────→ ret
 | --- | --- | --- |
 | 로그인 (`auth.py`) | `hr.users` 계정과 비밀번호 해시 확인 | 가짜 계정 2개 |
 | 본인 조회 (`tools.py`) | `hr` 스키마에서 정해진 SQL로 조회 (연차, 복지포인트, 급여, 가족, 신청, 교육) | 가짜 값 |
-| 규정 검색 (`graph/retriever.py`) | `rag.chunks`에서 키워드 검색, 임베딩 모델이 있으면 벡터와 합침. `SEARCH_MODE=rag`면 `RAG-taehyeon` 패키지 사용 (`RAG_PATH`로 위치 지정) | 내장 예시 5개 |
+| 규정 검색 (`graph/retriever.py`) | `rag.chunks`에서 키워드 검색, 임베딩 모델이 있으면 벡터와 합침. `SEARCH_MODE=rag`면 예전 `RAG-taehyeon` 패키지 사용 (`RAG_PATH`로 위치 지정. 2026-11-19 보관됨 → [experiments/rag-taehyeon](https://github.com/Jaeyong-s-HR-Chatbot/experiments/tree/main/rag-taehyeon)) | 내장 예시 5개 |
 | 답변 생성 (`graph/nodes.py`) | Ollama·vLLM 호출. 답변 길이는 `LLM_MAX_TOKENS`(기본 600)로 제한 | 가짜 LLM (조회 값과 가장 가까운 조문 표시) |
 | 대화 로그 (`app.chat_log`) | `CHAT_LOG_DB=true`일 때 마스킹 질문·가명 ID·안전한 메타데이터 저장 | 안전한 항목만 콘솔 로그 |
 
@@ -115,7 +115,7 @@ guard → classify ─┬─ rule ─────────────→ ret
 | 의도 분류 (`classify`) | 키워드 규칙. 개인정보를 소개하는 문장("연락처는 …이에요")은 본인 조회 판단에서 빼고, 신청 방법 질문과 신청 현황 조회를 구분. 민감 주제·타인 조회는 문장 전체로 검사 | 규칙에 없는 표현은 잘못 분류될 수 있음. 애매한 질문만 LLM으로 보완할지 결정 | 진태현 |
 | 계산 (`calc`) | 출장비, 연차 일수, 시간외수당은 기준표로 계산(`CALC_TOOLS=on`일 때). 가족수당은 함수만 있음 | 질문에서 값을 뽑는 방식 개선(LLM 추출), 가족수당·경조휴가 등 연결, 가정값(🔍) 항목은 값 확정 후 추가 | 진태현 |
 | 검증 (`verify`) | 검색 점수가 기준(0.3) 이상이면 통과. 묻는 내용이 없는 문장은 모델을 부르지 않고 안내. "규정에서 확인되지 않아요"로 시작하는 답변은 근거 없음으로 기록 | 키워드만 겹쳐도 통과해 근거 없이 답하는 경우가 있음. 재정렬 점수 기반으로 교체, 답변 숫자와 근거 대조 | 진태현 |
-| 검색 고도화 | 기본은 키워드 + (선택) 벡터. `SEARCH_MODE=rag`면 옆 폴더 `RAG-taehyeon` 패키지(Dense + BM25 → RRF, 선택 재정렬)로 검색 | 재정렬 채택 확정, 임계값 보정. BM25만 켠 rag 검색은 "근거 없음" 거절이 약함 | 이재용 · 진태현 |
+| 검색 고도화 | 기본은 키워드 + (선택) 벡터. `SEARCH_MODE=rag`면 옆 폴더 `RAG-taehyeon` 패키지(Dense + BM25 → RRF, 선택 재정렬)로 검색 (예전 실험, 2026-11-19 `experiments` 저장소로 보관. 검색 방식은 '조문 검색 + 항 리랭크'로 정함) | 재정렬 채택 확정, 임계값 보정. BM25만 켠 rag 검색은 "근거 없음" 거절이 약함 | 이재용 · 진태현 |
 | 권한 | 코드에서 사번을 토큰으로 고정, 개인정보 테이블은 읽지 않음 | 챗봇 전용 계정(`chatbot_ro`), RLS | 박규태 |
 | 로그 | HMAC-SHA256 가명 ID와 마스킹 질문·답변, 분류·근거·도구명·처리시간 저장. 조회 도구를 쓴 답변은 `answer_masked`를 비워 둠. [마스킹 안내](./docs/masking.md) 참고 | `.env`에 고정 `PSEUDO_KEY`를 안전하게 설정해야 재시작 후에도 가명 ID가 유지됨. "근거 없음"과 "권한 없음"을 구분하는 항목 추가 | 박규태 · 진태현 |
 | 인사팀 전용 조회 | hr_admin이면 `graph/admin_classify.py`가 data / both / rule / unavailable / refuse로 분류하고, `admin_tools.py`의 집계 도구 17개(연차 사용률, 잔여 연차 명단, 휴직·정년·수습, 교육 이수율, 수당 총액 등)를 정해진 SQL로 실행. 표는 답변 뒤에 코드가 붙이고, 로그엔 도구 이름만 | 실제 Postgres에서 확인, 도구 고르기 LLM 보조, 출퇴근 기록(attendance) 기반 도구 | 진태현 |
