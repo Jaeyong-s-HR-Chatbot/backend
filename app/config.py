@@ -37,14 +37,6 @@ LLM_BASE_URL = _get("LLM_BASE_URL")
 LLM_MODEL = _get("LLM_MODEL", "qwen3.5-9b")
 LLM_API_KEY = _get("LLM_API_KEY", "EMPTY")
 
-# 의도 분류 (기본은 기존 규칙 방식)
-CLASSIFY_MODE = _get("CLASSIFY_MODE", "rule").lower()
-if CLASSIFY_MODE not in {"rule", "assist", "hybrid", "llm"}:
-    log.warning("CLASSIFY_MODE 값이 올바르지 않아 rule 방식으로 동작합니다")
-    CLASSIFY_MODE = "rule"
-CLASSIFY_MODEL = _get("CLASSIFY_MODEL", LLM_MODEL) or LLM_MODEL
-CLASSIFY_TIMEOUT = float(_get("CLASSIFY_TIMEOUT", "30"))
-
 # 규정 청크 파일. 있으면 가짜 검색이 이 파일에서 키워드로 찾아요. 없으면 내장 예시 5개만 사용
 RULES_CHUNKS_PATH = _get("RULES_CHUNKS_PATH")
 

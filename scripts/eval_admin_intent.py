@@ -1,17 +1,16 @@
 """인사팀(hr_admin) 의도 분류 평가: 관리자 골든셋으로 의도·집계 도구·인자를 채점해요 (답변 생성은 안 함).
 
-    python scripts/eval_admin_intent.py --mode rule
-    python scripts/eval_admin_intent.py --mode rule hybrid --split test     # LLM은 .env의 LLM_BASE_URL(Ollama)로
+    python scripts/eval_admin_intent.py
+    python scripts/eval_admin_intent.py --split test --save
 
-Colab(vLLM)에서는 노트북이 admin_llm_classify._request를 vLLM 요청으로 바꾼 뒤 run()을 불러요.
+의도 분류는 규칙만 써요 (LLM은 도구 호출 뒤 답변 생성에서만 씀).
 - 정답 data와 both는 같은 정답으로 봐요 (backend는 집계 도구를 쓰면 항상 규정도 같이 찾음)
 - 질문 내용이 없으면 파이프라인처럼 no_question으로 봐요
-- 정답이 refuse인 문항(A-L03·L04 대화 기록 조회, 117번 일반 직원 계정)은 인사팀 의도에 refuse가 없어 채점에서 빼고 따로 보여줘요
+- 정답이 refuse인 문항(A-L03·L04 특정인 대화 기록·민감 상담자 조회)도 채점해요. 117번(일반 직원 계정)은 role이 employee라 빠져요
 """
 import argparse
 import json
 import sys
-from collections import Counter
 from datetime import date, datetime
 from pathlib import Path
 from time import perf_counter
@@ -20,14 +19,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app import admin_tools, config  # noqa: E402
-from app.graph import admin_llm_classify, nodes  # noqa: E402
+from app import admin_tools  # noqa: E402
+from app.graph import nodes  # noqa: E402
 from app.graph.admin_classify import classify_admin_state  # noqa: E402
 
 GOLDEN_PATH = ROOT / "eval" / "golden" / "admin_golden_set.json"
 RUNS_DIR = ROOT / "eval" / "golden" / "runs"
 LOGIN = "E1307"   # 골든셋을 만들 때 쓴 인사팀 계정
-MODES = ("rule", "assist", "hybrid", "llm")
 
 
 def load_items(path: Path = GOLDEN_PATH) -> tuple[list[dict], date]:
@@ -47,43 +45,14 @@ def _norm(v):
     return str(v)
 
 
-class _LLMCounter:
-    """LLM 호출 수·실패 수를 세요 (실패하면 규칙 결과로 대체되므로 따로 봐야 해요)."""
-
-    def __init__(self):
-        self.calls = self.failures = 0
-        self.ms = []
-        self._orig = admin_llm_classify.classify
-
-    def __enter__(self):
-        def wrapped(question, today):
-            self.calls += 1
-            t = perf_counter()
-            r = self._orig(question, today)
-            self.ms.append((perf_counter() - t) * 1000)
-            if r is None:
-                self.failures += 1
-            return r
-        admin_llm_classify.classify = wrapped
-        return self
-
-    def __exit__(self, *exc):
-        admin_llm_classify.classify = self._orig
-
-
-def predict(question: str, mode: str, today: date) -> dict:
+def predict(question: str, today: date) -> dict:
     s = {"employee_id": LOGIN, "role": "hr_admin", "question": question}
     s.update(nodes.guard(s))
     if not nodes.has_question_content(s["masked_question"]):
         return {"intent": "no_question", "admin_tool": None, "admin_params": {}}
-    old = config.CLASSIFY_MODE
-    config.CLASSIFY_MODE = mode
-    try:
-        r = classify_admin_state(s, today)
-    finally:
-        config.CLASSIFY_MODE = old
+    r = classify_admin_state(s, today)
     return {"intent": r["intent"], "admin_tool": r.get("admin_tool"), "admin_params": r.get("admin_params") or {},
-            "classifier_tools": r.get("classifier_tools"), "sensitive_topic": r.get("sensitive_topic")}
+            "sensitive_topic": r.get("sensitive_topic")}
 
 
 def _prf(rows, label):
@@ -124,78 +93,56 @@ def summarize(rows: list[dict]) -> dict:
     }
 
 
-def run(modes=("rule",), split: str = "all", items=None, as_of: date | None = None) -> dict:
-    """modes별로 채점해요. 반환: {mode: {"summary": {...}, "by_split": {...}, "llm": {...}, "rows": [...]}}"""
+def run(split: str = "all", items=None, as_of: date | None = None) -> dict:
+    """채점 결과: {"summary": {...}, "by_split": {...}, "rows": [...]}"""
     if items is None:
         items, golden_as_of = load_items()
         as_of = as_of or golden_as_of
-    targets = [i for i in items if split == "all" or i["split"] == split]
-    out = {}
-    for mode in modes:
-        rows = []
-        with _LLMCounter() as counter:
-            for it in targets:
-                t = perf_counter()
-                try:
-                    p = predict(it["question"], mode, as_of)
-                except Exception as e:   # 한 문항 오류로 전체가 멈추지 않게
-                    p = {"intent": f"error:{type(e).__name__}", "admin_tool": None, "admin_params": {}}
-                ms = (perf_counter() - t) * 1000
-                gold = same_intent(it["intent"])
-                gp = it.get("params") or {}
-                tool_ok = (p["admin_tool"] == it["tool"]) if it["tool"] else None
-                params_ok = (all(_norm(p["admin_params"].get(k)) == _norm(v) for k, v in gp.items())
-                             if tool_ok else (False if it["tool"] else None))
-                rows.append({"id": it["id"], "split": it["split"], "question": it["question"],
-                             "gold_intent": gold, "pred_intent": same_intent(p["intent"]),
-                             "gold_tool": it["tool"], "pred_tool": p["admin_tool"],
-                             "gold_params": gp, "pred_params": {k: _norm(v) for k, v in p["admin_params"].items()},
-                             "intent_ok": same_intent(p["intent"]) == gold, "tool_ok": tool_ok, "params_ok": params_ok,
-                             "scored": gold != "refuse", "ms": round(ms, 1)})
-        by_split = {sp: summarize([r for r in rows if r["split"] == sp]) for sp in sorted({r["split"] for r in rows})}
-        out[mode] = {"summary": summarize(rows), "by_split": by_split, "rows": rows,
-                     "llm": {"호출": counter.calls, "실패(규칙으로 대체)": counter.failures,
-                             "평균 ms": round(sum(counter.ms) / len(counter.ms), 1) if counter.ms else None}}
-    return out
+    rows = []
+    for it in (i for i in items if split == "all" or i["split"] == split):
+        t = perf_counter()
+        try:
+            p = predict(it["question"], as_of)
+        except Exception as e:   # 한 문항 오류로 전체가 멈추지 않게
+            p = {"intent": f"error:{type(e).__name__}", "admin_tool": None, "admin_params": {}}
+        ms = (perf_counter() - t) * 1000
+        gold = same_intent(it["intent"])
+        gp = it.get("params") or {}
+        tool_ok = (p["admin_tool"] == it["tool"]) if it["tool"] else None
+        params_ok = (all(_norm(p["admin_params"].get(k)) == _norm(v) for k, v in gp.items())
+                     if tool_ok else (False if it["tool"] else None))
+        rows.append({"id": it["id"], "split": it["split"], "question": it["question"],
+                     "gold_intent": gold, "pred_intent": same_intent(p["intent"]),
+                     "gold_tool": it["tool"], "pred_tool": p["admin_tool"],
+                     "gold_params": gp, "pred_params": {k: _norm(v) for k, v in p["admin_params"].items()},
+                     "intent_ok": same_intent(p["intent"]) == gold, "tool_ok": tool_ok, "params_ok": params_ok,
+                     "scored": True, "ms": round(ms, 1)})
+    by_split = {sp: summarize([r for r in rows if r["split"] == sp]) for sp in sorted({r["split"] for r in rows})}
+    return {"summary": summarize(rows), "by_split": by_split, "rows": rows}
 
 
 def markdown(result: dict) -> str:
-    lines = ["| 방식 | 문항 | 의도 정확도 | Macro-F1 | 도구 정확도 | 구현 도구 정확도 | 구현 도구 인자 | 도구 오탐 | LLM 호출 | LLM 실패 | 평균 ms |",
-             "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
-    for mode, r in result.items():
-        s, llm = r["summary"], r["llm"]
-        lines.append(f"| {mode} | {s['문항']} | {s['의도 정확도']} | {s['의도 Macro-F1']} | {s['도구 정확도']} | {s['구현 도구 정확도']} ({s['구현 도구 문항']}) | {s['구현 도구 인자 일치율']} | "
-                     f"{s['도구 오탐(정답에 도구 없음)']} | {llm['호출']} | {llm['실패(규칙으로 대체)']} | {s['평균 ms']} |")
-    lines += ["", "| 방식 | 라벨 | 정밀도 | 재현율 | F1 | 문항 |", "| --- | --- | ---: | ---: | ---: | ---: |"]
-    for mode, r in result.items():
-        for label, v in r["summary"]["라벨별"].items():
-            lines.append(f"| {mode} | {label} | {v['precision']} | {v['recall']} | {v['f1']} | {v['n']} |")
-    missing = sorted({x["gold_tool"] for x in first_rows(result) if x["gold_tool"] and x["gold_tool"] not in admin_tools.ADMIN_TOOLS})
+    s = result["summary"]
+    lines = ["| 문항 | 의도 정확도 | Macro-F1 | 도구 정확도 | 구현 도구 정확도 | 구현 도구 인자 | 도구 오탐 | 평균 ms |",
+             "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+             f"| {s['문항']} | {s['의도 정확도']} | {s['의도 Macro-F1']} | {s['도구 정확도']} | {s['구현 도구 정확도']} ({s['구현 도구 문항']}) | "
+             f"{s['구현 도구 인자 일치율']} | {s['도구 오탐(정답에 도구 없음)']} | {s['평균 ms']} |",
+             "", "| 라벨 | 정밀도 | 재현율 | F1 | 문항 |", "| --- | ---: | ---: | ---: | ---: |"]
+    for label, v in s["라벨별"].items():
+        lines.append(f"| {label} | {v['precision']} | {v['recall']} | {v['f1']} | {v['n']} |")
+    missing = sorted({x["gold_tool"] for x in result["rows"] if x["gold_tool"] and x["gold_tool"] not in admin_tools.ADMIN_TOOLS})
     if missing:
         lines += ["", f"골든셋 정답 도구 중 backend에 없는 도구 {len(missing)}개 (도구 정확도에서 항상 틀림): " + ", ".join(missing)]
-    first = next(iter(result.values()))
-    refused = [x for x in first["rows"] if not x["scored"]]
-    if refused:
-        lines += ["", "채점 제외 (정답 refuse, 인사팀 의도에 refuse 없음):"]
-        for mode, r in result.items():
-            for x in r["rows"]:
-                if not x["scored"]:
-                    lines.append(f"- {mode} {x['id']} → {x['pred_intent']} / {x['pred_tool']}: {x['question']}")
     return "\n".join(lines)
 
 
-def first_rows(result: dict) -> list[dict]:
-    return next(iter(result.values()))["rows"]
-
-
-def save(result: dict, tag: str, out_dir: Path | None = None) -> Path:
-    out_dir = out_dir or RUNS_DIR / f"admin_intent_{datetime.now():%Y%m%d_%H%M%S}_{tag}"
+def save(result: dict, out_dir: Path | None = None) -> Path:
+    out_dir = out_dir or RUNS_DIR / f"admin_intent_{datetime.now():%Y%m%d_%H%M%S}_rule"
     out_dir.mkdir(parents=True, exist_ok=True)
-    summary = {m: {k: v for k, v in r.items() if k != "rows"} for m, r in result.items()}
+    summary = {k: v for k, v in result.items() if k != "rows"}
     (out_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
-    for mode, r in result.items():
-        (out_dir / f"route_{mode}.jsonl").write_text(
-            "".join(json.dumps(x, ensure_ascii=False, default=str) + "\n" for x in r["rows"]), encoding="utf-8")
+    (out_dir / "route_rule.jsonl").write_text(
+        "".join(json.dumps(x, ensure_ascii=False, default=str) + "\n" for x in result["rows"]), encoding="utf-8")
     (out_dir / "summary.md").write_text(markdown(result), encoding="utf-8")
     return out_dir
 
@@ -203,19 +150,17 @@ def save(result: dict, tag: str, out_dir: Path | None = None) -> Path:
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mode", nargs="+", choices=MODES, default=["rule"])
     ap.add_argument("--split", choices=("all", "dev", "test", "uncertain"), default="all")
     ap.add_argument("--save", action="store_true", help="eval/golden/runs/에 결과 저장")
     args = ap.parse_args()
-    result = run(args.mode, args.split)
+    result = run(args.split)
     print(markdown(result))
-    for mode, r in result.items():
-        wrong = [x for x in r["rows"] if x["scored"] and (not x["intent_ok"] or x["tool_ok"] is False)]
-        print(f"\n[{mode}] 틀린 문항 {len(wrong)}개")
-        for x in wrong[:40]:
-            print(f"- {x['id']} 정답 {x['gold_intent']}/{x['gold_tool']} → {x['pred_intent']}/{x['pred_tool']}: {x['question']}")
+    wrong = [x for x in result["rows"] if x["scored"] and (not x["intent_ok"] or x["tool_ok"] is False)]
+    print(f"\n틀린 문항 {len(wrong)}개")
+    for x in wrong[:40]:
+        print(f"- {x['id']} 정답 {x['gold_intent']}/{x['gold_tool']} → {x['pred_intent']}/{x['pred_tool']}: {x['question']}")
     if args.save:
-        print("\n저장:", save(result, config.CLASSIFY_MODEL if set(args.mode) - {"rule"} else "rule"))
+        print("\n저장:", save(result))
 
 
 if __name__ == "__main__":

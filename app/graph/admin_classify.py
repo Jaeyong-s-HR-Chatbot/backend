@@ -1,18 +1,17 @@
 """인사팀(hr_admin) 질문 분류. 역할은 토큰에서 오고, 이 분류는 hr_admin일 때만 써요.
 
-임직원 분류(nodes.classify)와 같은 순서로 하되 두 군데가 달라요.
+임직원 분류(nodes._classify_rule)와 같은 순서로 하되 두 군데가 달라요.
 1. 민감 단어 → 종료하지 않고 sensitive_topic 표시만 붙임 (검색·답변은 하고 로그만 [민감 주제 문의])
 2. 다른 직원 언급 → 인사팀은 업무상 볼 수 있으니 거절하지 않음
-3. 질문 내용 없음 → 규칙 결과로 종료
-4. LLM 호출 → 의도·본인 조회 도구·계산 값 + 집계 도구를 쓸지와 그 인자까지 고름
-5. LLM 실패 → 규칙 결과
+규칙 분류만 써요. LLM은 도구 호출 뒤 답변 생성에서만 불러요.
 
 의도
 - rule         : 규정·절차만 → 검색 → 답변 (징계·고충도 여기로)
 - lookup       : 담당자 본인 데이터만 (내 연차 잔여, 내 급여) → 본인 조회 → 답변
 - both         : 데이터 + 규정. admin_tool이 있으면 집계 조회 + 규정 검색, 없으면 본인 조회 + 규정 검색
 - out_of_scope : 인사 업무와 무관 → 안내
-※ 인사팀에게는 refuse·sensitive 의도가 없어요 (임직원 전용)
+※ 인사팀에게 sensitive 의도는 없어요. refuse는 대화 기록 정책에만 써요:
+  특정 직원이 챗봇에 물어본 내용, 민감 상담·신고를 한 직원이 누구인지는 인사팀에게도 알려주지 않음 (주제별 집계는 허용)
 
 규칙 분류는 집계 도구를 단어로 고르고, 기간·기준값은 질문에서 뽑아요. 못 뽑으면 도구의 기본값을 써요.
 """
@@ -20,14 +19,19 @@ import logging
 import re
 from datetime import date, timedelta
 
-from .. import config
-
 log = logging.getLogger("hr_chat")
 
 SENSITIVE = ["괴롭힘", "성희롱", "성추행", "폭언", "고충", "따돌림", "부당", "갑질", "자살", "우울"]   # 징계는 민감 단어 아님
 # 본인 질문: 1인칭이 띄어쓰기와 함께 나와야 해요. 임직원 규칙의 '남은·잔여'는 인사팀 집계 질문("남은 연차 10일 이상인 직원")에도
 # 흔해서 쓰지 않아요.
 SELF = re.compile(r"(?<![가-힣A-Za-z0-9])(?:내|제|나의|저의|내가|제가)(?=\s)")
+# 대화 기록 정책 (관리자 골든셋 A-L01~L04): 주제 집계는 허용, 특정인의 대화·민감 상담자 신원은 거절
+_TITLE = r"(?:사원|주임|대리|과장|차장|부장|팀장|본부장|님|씨)"
+CHAT_LOG = re.compile(r"챗봇|대화\s*(?:기록|내용|내역|로그)|채팅\s*(?:기록|내용|내역)|질문\s*(?:기록|내역|로그)")
+WHO = re.compile(rf"누가|누구(?!\s*(?:한테|에게|랑|와|에))|명단|이름|사번|[Ee]1\d{{3}}|\[사번\]|[가-힣]{{2,4}}\s?{_TITLE}(?:이|가|은|는|의)?\s")
+# 민감 상담·신고를 "한 사람"을 묻는 말 ("괴롭힘 상담한 직원"). "신고는 누구한테 해?"는 절차 질문이라 아님
+CONSULTER = re.compile(r"(?:상담|문의|신고|제보|물어|질문)\S*\s*(?:한|했던|하신|했다는)\s*(?:직원|사람|사원|분|팀원)|(?:상담|신고|제보)자")
+
 # 1인칭이 있어도 여러 사람을 묻는 말이면 집계 질문 ("내 팀원들 연차", "제 부서 직원 명단")
 GROUP_WORDS = ["직원", "명단", "부서", "팀원", "사람", "누구", "몇 명", "전체", "TOP"]
 # 인사팀 업무 단어. 임직원 규칙의 인사 단어(_HR_WORDS)에 더해, 이것도 없고 집계 도구도 못 찾으면 out_of_scope
@@ -309,12 +313,14 @@ def _both(tool: str, params: dict, sensitive_topic: bool) -> dict:
 def classify_admin(q: str, today: date | None = None) -> dict:
     """인사팀 규칙 분류: 질문 → {intent, admin_tool?, admin_params?, search_hint?, sensitive_topic}
 
-    순서: 민감 표시 → (다른 직원 허용) → 본인 질문 → 집계 도구 → out_of_scope → rule
+    순서: 민감 표시 → 대화 기록 정책(특정인 대화·민감 상담자 신원 → refuse) → (다른 직원 허용) → 본인 질문 → 집계 도구 → out_of_scope → rule
     """
     from .nodes import _APPLICATION_STATUS, _HR_WORDS, _OTHER_ORG, _RULE_WORDS, _TOOL_WORDS   # 순환 import 방지
 
     today = today or date.today()
     sensitive_topic = any(w in q for w in SENSITIVE)        # 1. 종료하지 않고 표시만
+    if WHO.search(q) and (CHAT_LOG.search(q) or (sensitive_topic and CONSULTER.search(q))):
+        return {"intent": "refuse", "refuse_reason": "chat_log", "sensitive_topic": sensitive_topic}   # 0. 대화 기록 정책
     # 2. 다른 직원 언급은 거절하지 않음 (인사팀 업무)
     if SELF.search(q) and not any(w in q for w in GROUP_WORDS):
         has_tool = any(w in q for w in _TOOL_WORDS) or bool(_APPLICATION_STATUS.search(q))
@@ -329,32 +335,8 @@ def classify_admin(q: str, today: date | None = None) -> dict:
 
 
 def classify_admin_state(s: dict, today: date | None = None) -> dict:
-    """인사팀 분류 진입점 (nodes.classify가 hr_admin일 때 불러요). CLASSIFY_MODE는 임직원과 같은 값을 써요.
+    """인사팀 분류 진입점 (nodes.classify가 hr_admin일 때 불러요). 규칙 분류만 써요.
     today는 평가에서 기준일을 고정할 때만 넘겨요."""
-    from .nodes import has_question_content, question_text   # 순환 import 방지
+    from .nodes import question_text   # 순환 import 방지
 
-    today = today or date.today()
-    question = question_text(s)
-    rule_result = classify_admin(question, today)
-    if config.CLASSIFY_MODE == "rule":
-        return rule_result
-    if not has_question_content(s["masked_question"]):      # 3. 질문 내용 없음 → 규칙 결과로 종료
-        return rule_result
-
-    from . import admin_llm_classify
-
-    result = admin_llm_classify.classify(question, today)   # 4. LLM
-    if result is None:                                              # 5. 실패 → 규칙 결과
-        log.warning("인사팀 LLM 의도 분류에 실패해 규칙 결과로 대체합니다")
-        return rule_result
-    sensitive_topic = rule_result["sensitive_topic"]
-    if config.CLASSIFY_MODE == "assist":
-        # 의도·도구는 규칙 그대로 두고, LLM은 계산 값 추출에만 써요 (임직원 assist와 같음)
-        return {**rule_result, "classifier_calc": result["calc"]}
-    if result.get("admin_tool"):
-        out = _both(result["admin_tool"], result["admin_params"], sensitive_topic)
-    else:
-        out = {"intent": result["intent"], "sensitive_topic": sensitive_topic}
-    out["classifier_tools"] = result["tools"]
-    out["classifier_calc"] = result["calc"]
-    return out
+    return classify_admin(question_text(s), today or date.today())

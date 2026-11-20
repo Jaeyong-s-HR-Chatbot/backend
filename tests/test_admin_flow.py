@@ -279,3 +279,31 @@ def test_new_tools_have_search_hint():
     from app.graph.admin_classify import SEARCH_HINTS
     new = {"unused_leave_pay_estimate", "wage_peak_list", "trips_by_dept", "service_anniversary", "duplicate_condolence_payments"}
     assert new <= set(SEARCH_HINTS) and set(SEARCH_HINTS) <= set(ADMIN_TOOLS)
+
+
+@pytest.mark.parametrize("q", [
+    "박지현 과장이 챗봇한테 뭐 물어봤어?",
+    "괴롭힘 상담한 직원 누구야?",
+    "괴롭힘 신고한 직원 명단 줘",
+    "E1412가 챗봇에 뭐 물어봤는지 보여줘",
+])
+def test_admin_chat_log_of_person_is_refused(q):
+    """대화 기록 정책: 특정인의 대화 내용·민감 상담자 신원은 인사팀에게도 거절"""
+    r = classify_admin(q, TODAY)
+    assert r["intent"] == "refuse" and r["refuse_reason"] == "chat_log"
+
+
+@pytest.mark.parametrize("q", [
+    "직원들은 챗봇한테 주로 뭐 물어봤어?",          # 주제 집계는 허용
+    "괴롭힘 신고는 누구한테 해야 돼?",              # 신고 절차
+    "성희롱 고충 처리 절차가 어떻게 돼?",
+    "김민수 과장 연차 며칠 남았어?",                # 다른 직원 업무 조회는 허용
+])
+def test_admin_non_chat_log_questions_not_refused(q):
+    assert classify_admin(q, TODAY)["intent"] != "refuse"
+
+
+def test_admin_chat_log_refuse_message():
+    from app.graph import nodes
+    msg = nodes.refuse({"intent": "refuse", "refuse_reason": "chat_log"})["answer"]
+    assert "대화 내용" in msg and "집계" in msg
