@@ -60,7 +60,8 @@ def test_login_with_db_account():
     assert c.post("/auth/login", json={"username": "e1584", "password": "wrong"}).status_code == 401
     assert c.post("/auth/login", json={"username": "E1584", "password": PW}).status_code == 200   # 사번 대문자로도 로그인
     me = c.get("/me", headers=token()).json()
-    assert me == {"employee_id": "E1584", "name": "이서준", "dept": "신호팀", "grade": "대리(4급)", "role": "employee"}
+    assert me == {"employee_id": "E1584", "name": "이서준", "dept": "신호팀", "grade": "대리(4급)", "role": "employee",
+                  "conf_roles": ["EMPLOYEE"], "clearance": 2}
     assert c.get("/me", headers=token("e1003")).json()["role"] == "hr_admin"
 
 

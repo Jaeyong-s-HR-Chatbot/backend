@@ -24,6 +24,8 @@ class Me(BaseModel):
     dept: str
     grade: str
     role: Literal["employee", "hr_admin"]
+    conf_roles: list[str] = Field(default_factory=lambda: ["EMPLOYEE"])
+    clearance: int = 2
 
 
 class ChatRequest(BaseModel):

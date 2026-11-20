@@ -12,6 +12,13 @@ USERS = {
     "E1003": {"employee_id": "E1003", "name": "송정식", "dept": "인사팀", "grade": "부장(1급)", "role": "hr_admin"},
 }
 
+CONF_TEAM_LEADS = {"E1003", "E1007", "E1243"}
+CONF_ROLE_GRANTS = {
+    "E1686": {"role": "HR_DISCIPLINE", "valid_from": "2026-11-20", "valid_to": None},
+    "E1707": {"role": "HR_LABOR", "valid_from": "2026-11-20", "valid_to": None},
+    "E1622": {"role": "SYS_ADMIN", "valid_from": "2026-11-20", "valid_to": None},
+}
+
 # DB 없이 돌릴 때 lookup이 돌려주는 값 (실제는 app/tools.py가 hr 스키마에서 조회)
 HR_RECORDS = {
     "E1584": {"기본정보": {"부서": "신호팀", "직위": "대리", "직급": "4급", "근무형태": "일근", "입사일": "2023-01-01", "근속연수": 3},
