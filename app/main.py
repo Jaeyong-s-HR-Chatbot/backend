@@ -2,7 +2,7 @@
 
 프론트(frontend-main)가 기대하는 3개:
   POST /auth/login  {username, password} → {access_token}
-  GET  /me          (토큰)               → {employee_id, name, dept, grade, role}
+  GET  /me          (토큰)               → {employee_id, name, dept, grade, role, conf_roles, clearance}
   POST /chat        {message} + 토큰     → {answer, citations:[{title}], refused}
 실행: uvicorn app.main:app --reload --port 8000
 """
@@ -12,7 +12,7 @@ import uuid
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import config
+from . import config, roles
 from .auth import authenticate, create_token, current_user
 from . import db
 from .graph import retriever
@@ -48,7 +48,8 @@ def login(body: LoginRequest):
 
 @app.get("/me", response_model=Me)
 def me(user: Me = Depends(current_user)):
-    return user
+    conf_roles = roles.get_roles(user.employee_id)
+    return user.model_copy(update={"conf_roles": sorted(conf_roles), "clearance": roles.clearance(conf_roles)})
 
 
 @app.post("/chat", response_model=ChatResponse)
