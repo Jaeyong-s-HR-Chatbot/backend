@@ -261,12 +261,19 @@ def _admin_table(r: dict, max_rows: int = 10) -> str:
     if not rows:
         return head
     def cell(k, v):   # 사용률·이수율·변화율은 %로
-        return f"{k} {v * 100:.1f}%" if k.endswith("률") and isinstance(v, float) else f"{k} {v}"
+        return f"{k} {v * 100:.1f}%" if k.endswith(("률", "율")) and isinstance(v, float) else f"{k} {v}"
     lines = [head] + ["- " + " · ".join(cell(k, v) for k, v in row.items()) for row in rows[:max_rows]]
     if r.get("부서별"):
         lines.append("부서별: " + ", ".join(f"{k} {v}명" for k, v in r["부서별"].items()))
-    if r.get("건수", len(rows)) > max_rows:
+    if "명단" in r:      # 표는 부서별, 건수는 명단 인원이라 남은 줄 수를 따로 셈
+        if len(rows) > max_rows:
+            lines.append(f"…외 {len(rows) - max_rows}개 부서")
+    elif r.get("건수", len(rows)) > max_rows:
         lines.append(f"…외 {r.get('건수', len(rows)) - max_rows}건")
+    if r.get("단계"):
+        lines.append("촉진 단계: " + " · ".join(f"{k} {v}" for k, v in r["단계"].items()))
+    if r.get("주의"):
+        lines.append(f"참고: {r['주의']}")
     return "\n".join(lines)
 
 
@@ -274,7 +281,8 @@ def _admin_table(r: dict, max_rows: int = 10) -> str:
 def retrieve(s: HRState) -> HRState:
     """TODO 교체: 이재용 님 리트리버 (BGE-M3 + BM25 → RRF → bge-reranker-v2-m3)"""
     wide = s.get("retries", 0) > 0
-    return {"chunks": retriever.search(s["masked_question"], k=5, wide=wide)}
+    query = f"{s['masked_question']} {s['search_hint']}" if s.get("search_hint") else s["masked_question"]
+    return {"chunks": retriever.search(query, k=5, wide=wide)}
 
 
 # ───────────── calc: 계산 Tool ─────────────

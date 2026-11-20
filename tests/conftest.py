@@ -1,4 +1,4 @@
-"""공용 픽스처: DB 저장소의 가짜 HR CSV(../DB/data/hr)를 메모리 SQLite에 올려 db.fetch_all을 바꿔 끼움.
+"""공용 픽스처: DB 저장소의 가짜 HR CSV(../DB/data/hr, 출퇴근은 ../DB/data/extra)를 메모리 SQLite에 올려 db.fetch_all을 바꿔 끼움.
 
 Postgres 없이 인사팀 집계 SQL을 돌려 보기 위한 것. SQL은 Postgres와 SQLite 양쪽에서 도는 문법만 써요.
 """
@@ -33,8 +33,9 @@ def hr_sqlite():
         pytest.skip("DB/data/hr CSV가 없어 건너뜀")
     con = sqlite3.connect(":memory:", check_same_thread=False)
     con.execute("ATTACH DATABASE ':memory:' AS hr")
-    for t in HR_TABLES:
-        with open(HR_CSV / f"{t}.csv", encoding="utf-8-sig") as f:
+    for t in HR_TABLES + ["attendance"]:
+        path = HR_CSV / f"{t}.csv" if t != "attendance" else HR_CSV.parent / "extra" / "attendance.csv"
+        with open(path, encoding="utf-8-sig") as f:
             rows = list(csv.reader(f))
         cols = rows[0]
         con.execute(f"CREATE TABLE hr.{t} ({', '.join(cols)})")
