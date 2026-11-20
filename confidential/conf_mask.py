@@ -30,10 +30,16 @@ def detect_text(text, chunk, field, tok, model, counts):
 def mask_chunk(chunk, tok, model, counts):
     """조각 하나 → 찾은 구간·가린 사본·민감정보·간접 식별"""
     d = detect_text(chunk["text"], chunk, "text", tok, model, counts)
+    if d["sen"]:
+        masked = "[민감정보]"
+    elif chunk.get("chunk_type") == "항목" and chunk.get("article") == "징계대상자 소속":
+        masked = "[부서]"
+    else:
+        masked = ner_ext.mask_all(chunk["text"], d["entities"], d["qi"])
     out = dict(chunk_id=chunk["chunk_id"], entities=[list(x) for x in d["entities"]],
                og=[list(x) for x in d["og"]], pos=[list(x) for x in d["pos"]], sen=d["sen"],
                qi=[[o[3], p[3], n, hide] for o, p, n, hide in d["qi"]],
-               masked="[민감정보]" if d["sen"] else ner_ext.mask_all(chunk["text"], d["entities"], d["qi"]))
+               masked=masked)
     if chunk.get("speaker_label"):
         s = detect_text(chunk["speaker_label"], chunk, "speaker_label", tok, model, counts)
         out["speaker_masked"] = ner_ext.mask_all(chunk["speaker_label"], s["entities"])
