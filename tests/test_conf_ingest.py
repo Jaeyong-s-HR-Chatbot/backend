@@ -123,6 +123,40 @@ def test_sensitive_chunk_does_not_expose_original(monkeypatch, sensitive_type):
     assert text not in result["masked"]
 
 
+@pytest.mark.parametrize("count", [1, 100])
+def test_discipline_subject_department_is_always_masked(monkeypatch, count):
+    monkeypatch.setattr(
+        conf_mask, "detect_text",
+        lambda *_args: {"entities": [], "og": [], "pos": [], "qi": [], "sen": None},
+    )
+    chunk = {"chunk_id": "test-1", "chunk_type": "항목", "article": "징계대상자 소속", "text": "가상운영팀"}
+    result = conf_mask.mask_chunk(chunk, None, None, {("가상운영팀", "과장"): count})
+    assert result["masked"] == "[부서]"
+
+
+@pytest.mark.parametrize(("chunk_type", "article"), [
+    ("항목", "소속"),
+    ("발언", "징계대상자 소속"),
+    ("발언", "발언 1"),
+])
+def test_other_department_text_keeps_existing_masking(monkeypatch, chunk_type, article):
+    monkeypatch.setattr(
+        conf_mask, "detect_text",
+        lambda *_args: {"entities": [], "og": [], "pos": [], "qi": [], "sen": None},
+    )
+    chunk = {"chunk_id": "test-1", "chunk_type": chunk_type, "article": article, "text": "가상운영팀"}
+    assert conf_mask.mask_chunk(chunk, None, None, {})["masked"] == "가상운영팀"
+
+
+def test_sensitive_subject_department_keeps_sensitive_mask(monkeypatch):
+    monkeypatch.setattr(
+        conf_mask, "detect_text",
+        lambda *_args: {"entities": [], "og": [], "pos": [], "qi": [], "sen": "건강"},
+    )
+    chunk = {"chunk_id": "test-1", "chunk_type": "항목", "article": "징계대상자 소속", "text": "민감 내용"}
+    assert conf_mask.mask_chunk(chunk, None, None, {})["masked"] == "[민감정보]"
+
+
 def test_empty_pdf_does_not_overwrite_existing_document(tmp_path, monkeypatch, doc):
     pdf = tmp_path / "test.pdf"
     pdf.touch()
