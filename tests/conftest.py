@@ -12,7 +12,7 @@ import pytest
 
 HR_CSV = Path(__file__).resolve().parents[2] / "DB" / "data" / "hr"
 HR_TABLES = ["employees", "departments", "leave_balance", "leave_history", "requests", "absence_history",
-             "hr_history", "training", "payroll", "welfare_points"]
+             "hr_history", "training", "payroll", "welfare_points", "family", "business_trips", "audit_log"]
 _INT = re.compile(r"-?\d+")
 _FLOAT = re.compile(r"-?\d+\.\d+")
 

@@ -40,6 +40,32 @@ SEARCH_HINTS = {
     "late_early_frequent": "지각 조퇴 근무시작 소속장 승인",
     "attendance_missing": "근무상황부 근태 관리 퇴근절차",
     "leave_promotion_targets": "연차 유급휴가의 사용 촉진 미사용 휴가일수 서면 통보",
+    "unused_leave_pay_estimate": "연차 미사용 수당 보상 통상임금",
+    "new_hire_monthly_leave": "1년 미만 근로자 1개월 개근 유급휴가 연차",
+    "sick_leave_over_limit": "병가 연간 한도 업무상 질병 병가",
+    "long_service_leave_unused": "장기재직휴가 근속 10년 20년 30년",
+    "childcare_leave_eligible_unused": "육아휴직 만 8세 이하 자녀",
+    "retiree_leave_payout": "퇴직 연차 미사용 수당 정산",
+    "night_work_heavy": "야간작업 특수건강진단 대상",
+    "severance_estimate": "퇴직급여 평균임금 지급",
+    "honorary_retirement_eligible": "명예퇴직 신청 자격 근속",
+    "wage_peak_list": "임금피크제 적용 대상 정년 2년 전",
+    "expected_births": "출산전후휴가 90일 임신 근로자",
+    "birth_bonus_targets": "출산축하금 지급 대상 금액",
+    "promotion_min_years_met": "승진 소요 최저연수 직급별",
+    "exam_promotion_4_candidates": "4급 시험승진 응시 자격 5급 재직연수",
+    "long_stay_same_dept": "순환전보 같은 부서 근무 기간",
+    "transfer_restricted": "전보제한 기간 채용 구분",
+    "training_hours_lowest": "교육훈련 이수 시간 기준",
+    "family_allowance_overage": "가족수당 자녀 연령 지급 대상",
+    "long_service_bracket_change": "장기근속수당 근속연수 구간 지급 기준",
+    "couple_family_allowance": "가족수당 부부 직원 중복 지급 제한",
+    "welfare_points_proration_check": "복지포인트 중도 입사 복직 월할 지급",
+    "service_anniversary": "근속 표창 근속기간 10년 20년 30년 포상",
+    "trips_by_dept": "국내여비 정액표 일비 식비 숙박비",
+    "trips_unsettled": "여비 정산 출장 후 정산서 제출",
+    "long_trip_per_diem_check": "장기 출장 일비 감액 같은 지역 15일 초과",
+    "duplicate_condolence_payments": "경조금 중복 지급 금지 같은 경조사",
 }
 LEAVE_TYPES = ["생리휴가", "보건휴가", "난임치료휴가", "병가", "공가", "청원", "장기재직", "포상휴가", "가족돌봄",
                "배우자출산", "출산전후", "대체휴가", "반차", "연차"]
@@ -112,6 +138,11 @@ def pick_tool(q: str, today: date) -> tuple[str | None, dict]:
 
     if RULE_ASK.search(q) and not has(*DATA_WORDS):     # 규정만 묻는 질문은 도구 없이 rule로
         return None, {}
+
+    # 규정 단어가 겹치는 기존 규칙(연차 남은·퇴직자·야간·교육·복지포인트·휴가 종류 등)보다 앞에서 먼저 확인해요
+    tool = _pick_extra_tool(q, today, p, start, end, has)
+    if tool:
+        return tool
 
     if has("결재", "대기", "승인 안", "처리 안", "미처리") and has("신청", "건"):
         rt = next((v for k, v in REQUEST_TYPES.items() if k in q), None)
@@ -189,6 +220,82 @@ def pick_tool(q: str, today: date) -> tuple[str | None, dict]:
         return "leave_by_dept_period", {"start": start, "end": end}
 
     return None, {}
+
+
+def _pick_extra_tool(q: str, today: date, p, start, end, has) -> tuple[str, dict] | None:
+    """집계 도구 28개용 규칙. 순서가 중요해요 (위에서부터): 더 구체적인 단어가 먼저."""
+    year = start.year if p and start.year == end.year else None
+    this_month = f"{start.year}-{start.month:02d}" if p and (end - start).days < 31 else None
+
+    # 절차·방법만 묻는 말은 규정 질문 ("명예퇴직 신청 자격이 어떻게 돼?", "전보제한 해제 신청 절차")
+    if has("절차", "어떻게", "줄여줘야", "해제", "방법") and not has("명단", "누구", "몇 명", "직원", "사람", "목록"):
+        return None
+
+    # 휴가
+    if "연차수당" in q and has("미사용", "예상", "총액", "얼마"):
+        return "unused_leave_pay_estimate", {"year": year}
+    if has("퇴직자", "퇴사자") and has("연차", "휴가") and has("정산", "수당", "금액"):
+        return "retiree_leave_payout", {"year": year}
+    if "입사 1년" in q and has("연차", "월 단위", "월단위"):
+        return "new_hire_monthly_leave", {"asof": today}
+    if "병가" in q and has("한도", "넘긴", "초과", "넘은"):
+        return "sick_leave_over_limit", {"year": year}
+    if "장기재직" in q and has("안 쓴", "안쓴", "미사용", "대상"):
+        return "long_service_leave_unused", {"year": year}
+    if "육아휴직" in q and has("쓸 수 있", "안 쓴", "안쓴", "미사용"):
+        return "childcare_leave_eligible_unused", {"asof": today}
+    # 근태·퇴직·출산
+    if "야간" in q and has("특수건강진단", "특검", "건강진단 대상"):
+        return "night_work_heavy", {"months": 6}
+    if "임금피크" in q:
+        return "wage_peak_list", {"asof": today}
+    if "퇴직금" in q and has("예상", "얼마", "추정", "예정자"):
+        return "severance_estimate", {"retire_from": today, "retire_to": date(today.year + 1, 12, 31)}
+    if "명예퇴직" in q and has("가능", "대상", "몇 명", "자격", "누구"):
+        return "honorary_retirement_eligible", {"asof": today}
+    if "출산축하금" in q and has("대상", "지급", "누구"):
+        return "birth_bonus_targets", {"month": this_month or f"{today.year}-{today.month:02d}"}
+    if "출산" in q and has("예정", "곧", "임박"):
+        return "expected_births", {"asof": today}
+    # 승진·전보
+    if "시험승진" in q or ("4급" in q and has("응시", "승진")):
+        return "exam_promotion_4_candidates", {"asof": today}
+    if "승진" in q and has("최저연수", "소요 연수", "소요연수", "최저 연수"):
+        return "promotion_min_years_met", {"year": year or today.year}
+    if "전보제한" in q or "전보 제한" in q:
+        return "transfer_restricted", {"asof": today}
+    if has("순환전보", "순환 전보") or ("전보" in q and has("오래", "장기간")) or ("부서" in q and has("오래 있", "오래 근무")):
+        return "long_stay_same_dept", {"asof": today}
+    # 교육
+    if "교육시간" in q and has("적은", "낮은", "부족", "제일", "가장"):
+        return "training_hours_lowest", {"year": year, "limit": 10}
+    # 수당·복지
+    if "가족수당" in q and has("부부", "둘 다", "둘다", "중복"):
+        return "couple_family_allowance", {}
+    if "가족수당" in q and has("기준 나이", "나이 넘", "넘은", "초과", "자격"):
+        return "family_allowance_overage", {"asof": today}
+    if "장기근속수당" in q and has("구간", "바뀌", "변경", "올라"):
+        ym = f"{start.year}-{start.month:02d}" if p else (f"{today.year + (today.month == 12)}-{today.month % 12 + 1:02d}")
+        return "long_service_bracket_change", {"month": ym}
+    if has("복지포인트", "복지 포인트") and has("월할", "제대로", "맞게", "중간에 입사", "복직"):
+        return "welfare_points_proration_check", {"year": year}
+    if "근속" in q and has("10·20·30", "10,20,30", "10 20 30", "되는 직원", "되는 사람") and "수당" not in q:
+        return "service_anniversary", {"year": year or today.year}
+    # 출장·경조금
+    if "출장" in q and has("일비") and has("감액", "장기"):
+        return "long_trip_per_diem_check", {}
+    if "출장" in q and has("정산"):
+        return "trips_unsettled", {"asof": today}
+    if "출장" in q and has("부서", "출장비") and has("많은", "예상", "총액", "TOP"):
+        return "trips_by_dept", {"month": this_month or f"{today.year}-{today.month:02d}"}
+    if "경조금" in q and has("두 번", "두번", "중복", "이중", "또 나간"):
+        return "duplicate_condolence_payments", {}
+    # 로그
+    if has("챗봇", "대화") and has("주제", "직원들", "주로", "TOP") and not has("괴롭힘", "고충"):
+        return "chat_topic_stats", {"month": this_month, "limit": _num(r"TOP\s*(\d+)", q) or 5}
+    if has("개인정보", "조회 기록", "감사로그", "감사 로그") and has("조회", "열람", "누가"):
+        return "audit_log_recent", {"action": "개인정보 조회" if "개인정보" in q else None}
+    return None
 
 
 def _both(tool: str, params: dict, sensitive_topic: bool) -> dict:
