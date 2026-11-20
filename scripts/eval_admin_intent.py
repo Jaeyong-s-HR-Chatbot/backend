@@ -6,7 +6,7 @@
 의도 분류는 규칙만 써요 (LLM은 도구 호출 뒤 답변 생성에서만 씀).
 - 정답 data와 both는 같은 정답으로 봐요 (backend는 집계 도구를 쓰면 항상 규정도 같이 찾음)
 - 질문 내용이 없으면 파이프라인처럼 no_question으로 봐요
-- 정답이 refuse인 문항(A-L03·L04 대화 기록 조회, 117번 일반 직원 계정)은 인사팀 의도에 refuse가 없어 채점에서 빼고 따로 보여줘요
+- 정답이 refuse인 문항(A-L03·L04 특정인 대화 기록·민감 상담자 조회)도 채점해요. 117번(일반 직원 계정)은 role이 employee라 빠져요
 """
 import argparse
 import json
@@ -116,7 +116,7 @@ def run(split: str = "all", items=None, as_of: date | None = None) -> dict:
                      "gold_tool": it["tool"], "pred_tool": p["admin_tool"],
                      "gold_params": gp, "pred_params": {k: _norm(v) for k, v in p["admin_params"].items()},
                      "intent_ok": same_intent(p["intent"]) == gold, "tool_ok": tool_ok, "params_ok": params_ok,
-                     "scored": gold != "refuse", "ms": round(ms, 1)})
+                     "scored": True, "ms": round(ms, 1)})
     by_split = {sp: summarize([r for r in rows if r["split"] == sp]) for sp in sorted({r["split"] for r in rows})}
     return {"summary": summarize(rows), "by_split": by_split, "rows": rows}
 
@@ -133,10 +133,6 @@ def markdown(result: dict) -> str:
     missing = sorted({x["gold_tool"] for x in result["rows"] if x["gold_tool"] and x["gold_tool"] not in admin_tools.ADMIN_TOOLS})
     if missing:
         lines += ["", f"골든셋 정답 도구 중 backend에 없는 도구 {len(missing)}개 (도구 정확도에서 항상 틀림): " + ", ".join(missing)]
-    refused = [x for x in result["rows"] if not x["scored"]]
-    if refused:
-        lines += ["", "채점 제외 (정답 refuse, 인사팀 의도에 refuse 없음):"]
-        lines += [f"- {x['id']} → {x['pred_intent']} / {x['pred_tool']}: {x['question']}" for x in refused]
     return "\n".join(lines)
 
 

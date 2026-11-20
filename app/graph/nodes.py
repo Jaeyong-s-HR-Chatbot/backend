@@ -608,7 +608,10 @@ def route_after_verify(s: HRState) -> str:
 
 # ───────────── refuse / sensitive ─────────────
 def refuse(s: HRState) -> HRState:
-    if s.get("intent") == "refuse":
+    if s.get("refuse_reason") == "chat_log":
+        msg = ("직원 개인의 챗봇 대화 내용이나 상담·신고한 직원이 누구인지는 알려드릴 수 없어요. "
+               "많이 물어본 주제처럼 사람을 알 수 없는 집계만 볼 수 있어요.")
+    elif s.get("intent") == "refuse":
         msg = "다른 직원의 정보나 권한 밖의 내용은 알려드릴 수 없어요. 필요하면 인사팀에 정식으로 요청해 주세요."
     else:
         msg = "이 질문은 등록된 규정에서 근거를 찾지 못했어요. 정확한 내용은 인사팀에 확인해 주세요."
