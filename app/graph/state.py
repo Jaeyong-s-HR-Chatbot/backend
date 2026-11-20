@@ -19,9 +19,9 @@ class HRState(TypedDict, total=False):
     employee_id: str           # 토큰에서 꺼낸 사번. 질문 글에서 읽지 않음
     role: str                  # employee / hr_admin
     own_name: str              # /me에서 확인한 본인 이름 (답변 로그 마스킹용)
-    question: str              # guard 입력 전용 원문 질문. guard 뒤 상태에서 제거
+    question: str              # 원문 질문. 분류·검색·조회·답변은 이것으로 (로그에는 저장 안 함)
     # guard
-    masked_question: str       # 개인정보를 가린 질문 (로그·LLM에는 이것만)
+    masked_question: str       # 개인정보를 가린 사본. 로그 저장용 + 규칙 분류의 타인 사번 태그 탐지용
     pii_found: dict[str, int]  # 종류별 마스킹 횟수
     has_other_emp_id: bool     # 질문에서 타인 사번을 감지했는지
     # classify

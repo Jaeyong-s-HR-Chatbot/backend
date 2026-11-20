@@ -30,6 +30,8 @@ ADMIN_ANSWER_LOG_PLACEHOLDER = "[인사팀 집계 답변 · 내용 미저장]"
 SENSITIVE_PSEUDO_LOG_PLACEHOLDER = "[민감 주제 · 가명 미저장]"
 
 def guard(s: HRState) -> HRState:
+    """질문 속 개인정보를 찾아 로그 저장용 사본(masked_question)만 만들어요. 분류·검색·조회·답변은 원문으로 해요.
+    사본의 [사번]·[본인사번] 같은 태그는 규칙 분류가 타인 사번·개인정보 소개 문장을 알아보는 데에도 써요."""
     result = mask_text(s["question"], own_emp_id=s["employee_id"], own_name=s.get("own_name"))
     return {
         "masked_question": result.text,
@@ -37,6 +39,11 @@ def guard(s: HRState) -> HRState:
         "has_other_emp_id": result.found.get("사번", 0) > 0,
         "retries": 0,
     }
+
+
+def question_text(s: HRState) -> str:
+    """처리에 쓰는 질문: 원문. (원문 없이 만든 단위 테스트 상태는 masked_question)"""
+    return s.get("question") or s["masked_question"]
 
 
 # ───────────── classify: 의도 분류 (규칙) ─────────────
@@ -161,19 +168,20 @@ def _classify_rule(s: HRState) -> HRState:
 
 def classify(s: HRState) -> HRState:
     if s.get("role") == "hr_admin":                # 인사팀은 전용 분류 (역할은 토큰에서)
-        return classify_admin(s["masked_question"])
+        return classify_admin(question_text(s))
     if config.CLASSIFY_MODE == "rule":
         return _classify_rule(s)
 
-    question = s["masked_question"]
+    question = question_text(s)
+    tagged = s["masked_question"]            # 개인정보 소개만 있는 문장(질문 없음)은 태그로 알아봐요
     rule_result = None
     if config.CLASSIFY_MODE in {"hybrid", "assist"}:
         rule_result = _classify_rule(s)
         if rule_result["intent"] in {"sensitive", "refuse"}:
             return rule_result
-        if not has_question_content(question):
+        if not has_question_content(tagged):
             return rule_result
-    elif not has_question_content(question):
+    elif not has_question_content(tagged):
         return {"intent": "rule"}
 
     result = llm_classify.classify(question, date.today())
@@ -205,7 +213,7 @@ def lookup(s: HRState) -> HRState:
         selected_tools = s.get("classifier_tools")
         data, used = tools.run_lookups(
             s["employee_id"],
-            s["masked_question"],
+            question_text(s),
             selected_tools=selected_tools if isinstance(selected_tools, list) else None,
         )
     else:
@@ -281,7 +289,7 @@ def _admin_table(r: dict, max_rows: int = 10) -> str:
 def retrieve(s: HRState) -> HRState:
     """TODO 교체: 이재용 님 리트리버 (BGE-M3 + BM25 → RRF → bge-reranker-v2-m3)"""
     wide = s.get("retries", 0) > 0
-    query = f"{s['masked_question']} {s['search_hint']}" if s.get("search_hint") else s["masked_question"]
+    query = f"{question_text(s)} {s['search_hint']}" if s.get("search_hint") else question_text(s)
     return {"chunks": retriever.search(query, k=5, wide=wide)}
 
 
@@ -443,7 +451,7 @@ def _calc_from_classifier(calc: dict, chunks: list, question: str) -> dict | Non
 
 def calc(s: HRState) -> HRState:
     """출장비: 근거에 단가(rates)가 있으면 박·일수로 계산. TODO: 기준표(rules.json) 기반 계산 함수로 확장 (수당, 경조휴가 등)"""
-    question = s["masked_question"]
+    question = question_text(s)
     classifier_calc = s.get("classifier_calc")
     if config.CALC_TOOLS and isinstance(classifier_calc, dict):
         result = _calc_from_classifier(
@@ -608,7 +616,7 @@ def _llm_answer(s: HRState) -> str:
         f"[근거]\n{ctx or '(없음)'}\n\n"
         f"[조회 결과]\n{json.dumps(_prompt_lookup(s), ensure_ascii=False, default=str)}\n\n"
         f"[계산 결과]\n{json.dumps(s.get('calc', {}), ensure_ascii=False)}\n\n"
-        f"[질문]\n{s['masked_question']}"
+        f"[질문]\n{question_text(s)}"
     )
     base = urlsplit(config.LLM_BASE_URL)
     if base.scheme == "http" and base.hostname in {"localhost", "127.0.0.1"} \

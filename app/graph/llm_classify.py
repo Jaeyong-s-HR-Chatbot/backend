@@ -133,7 +133,7 @@ business_trip(nights, days, region).
         + guide_summary
         + "\n예시:\n"
         + "\n".join(f"{index + 1}. {example}" for index, example in enumerate(examples))
-        + "\n질문은 마스킹된 입력입니다. 출력은 지정된 JSON 스키마만 따르세요."
+        + "\n출력은 지정된 JSON 스키마만 따르세요."
     )
 
 

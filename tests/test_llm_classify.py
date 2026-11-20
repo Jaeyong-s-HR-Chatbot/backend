@@ -120,7 +120,7 @@ def test_llm_mode_falls_back_to_rules_on_failure(monkeypatch, caplog):
     assert "LLM 의도 분류에 실패해 규칙 결과로 대체합니다" in caplog.text
 
 
-def test_classifier_receives_only_masked_question(monkeypatch):
+def test_classifier_receives_original_question(monkeypatch):
     monkeypatch.setattr(config, "CLASSIFY_MODE", "hybrid")
     received = []
     monkeypatch.setattr(
@@ -132,8 +132,7 @@ def test_classifier_receives_only_masked_question(monkeypatch):
 
     nodes.classify(_state("제 번호 010-1234-5678인데 출장비 기준을 알려 줘"))
 
-    assert received and "[전화]" in received[0]
-    assert "010-1234-5678" not in received[0]
+    assert received and "010-1234-5678" in received[0]   # 질문은 마스킹하지 않아요
 
 
 def test_invalid_tool_names_are_dropped():
@@ -366,7 +365,7 @@ def test_json_parse_failure_keeps_actual_output_in_evaluation_stats(tmp_path, mo
     assert stats.raw_json_failures == [("[전화] 문의", raw)]
 
 
-def test_few_shot_examples_are_dev_only_masked_and_pair_disjoint_from_test():
+def test_few_shot_examples_are_dev_only_original_and_pair_disjoint_from_test():
     cases = {
         case["id"]: case
         for case in (
@@ -398,14 +397,7 @@ def test_few_shot_examples_are_dev_only_masked_and_pair_disjoint_from_test():
         source = cases[example["id"]]
         assert source["split"] == "dev"
         assert example["id"].rsplit("-", 1)[0] not in test_pairs
-        masked = nodes.guard(
-            {
-                "employee_id": "E1584",
-                "own_name": "이서준",
-                "question": source["question"],
-            }
-        )["masked_question"]
-        assert example["question"] == masked
+        assert example["question"] == source["question"]   # LLM은 마스킹 안 한 원문을 받으니 예시도 원문
     assert sum(example["calc"] is not None for example in examples) == 4
 
 

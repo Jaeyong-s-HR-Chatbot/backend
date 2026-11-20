@@ -58,16 +58,11 @@ def chat(body: ChatRequest, user: Me = Depends(current_user)):
     kind = state.get("kind", "answer")
     citations = [Citation(title=c["citation"], chunk_id=c.get("id"), revised=c.get("revised") or None)
                  for c in state.get("chunks", [])[:3]] if kind == "answer" else []
-    pii_found = state.get("pii_found", {})
-    pii_notice = (
-        f"입력하신 개인정보({', '.join(pii_found)})는 가려서 처리했어요."
-        if pii_found else None
-    )
     return ChatResponse(
         answer=state.get("answer", ""),
         citations=citations,
         refused=(kind == "refused"),
         kind=kind,
         thread_id=body.thread_id or uuid.uuid4().hex,
-        pii_notice=pii_notice,
+        pii_notice=None,   # 질문은 마스킹하지 않아요 (로그에 저장할 때만 가림). 화면 호환용으로 칸만 남김
     )

@@ -30,9 +30,7 @@ def run_pipeline(employee_id: str, role: str, question: str, own_name: str = "")
         "own_name": own_name,
         "question": question,
     }
-    s |= n.guard(s)
-    s.pop("question", None)
-    del question
+    s |= n.guard(s)          # 질문은 원문 그대로 처리하고, 마스킹 사본은 로그 저장에만 써요
     s |= n.classify(s)
 
     if s["intent"] == "sensitive":
