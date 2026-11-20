@@ -605,7 +605,9 @@ def _prompt_lookup(s: HRState) -> dict:
     if r is None:
         return s.get("lookup", {})
     return {"인사팀 집계": {**r, "표": r.get("표", [])[:ADMIN_PROMPT_ROWS]},
-            "안내": "표의 숫자를 요약만 하고 명단을 다시 나열하지 마세요. 표는 답변 뒤에 따로 붙어요."}
+            "안내": ("표의 숫자를 요약만 하고 명단을 다시 나열하지 마세요. 표는 답변 뒤에 따로 붙어요. "
+                     "[근거]의 규정이 이 집계와 직접 관계있을 때만(대상 기준·기한·인사팀이 해야 할 조치) 짧게 덧붙이고 조문을 적으세요. "
+                     "관계없으면 규정은 언급하지 말고 집계만 요약하세요. '규정에서 확인되지 않아요'라고 쓰지 마세요.")}
 
 
 def _llm_answer(s: HRState) -> str:
@@ -676,6 +678,8 @@ def normalize_no_evidence(s: HRState) -> HRState:
         return {}
     if not s.get("answer", "").startswith("규정에서 확인되지 않아요"):
         return {}
+    if s.get("admin_result") is not None:      # 인사팀: 맞는 규정이 없어도 집계 표는 그대로 돌려줘요
+        return {"answer": f"집계 결과를 알려 드려요.\n\n{_admin_table(s['admin_result'])}", "chunks": []}
     return {
         "answer": "규정에서 확인되지 않아요. 인사팀에 확인해 주세요.",
         "kind": "refused",
@@ -719,9 +723,11 @@ def verify(s: HRState) -> HRState:
     """TODO 교체: 답변 숫자 ↔ 근거·계산 숫자 대조 + 리랭커 점수"""
     if s.get("intent") == "lookup":
         return {"verified": bool(s.get("lookup")) and bool(s.get("answer"))}
-    if s.get("intent") == "data":
-        return {"verified": s.get("admin_result") is not None and bool(s.get("answer"))}
     chunks = s.get("chunks", [])
+    if s.get("admin_result") is not None:
+        # 인사팀: 집계 표가 답이라 재검색하지 않아요. 맞는 규정(점수 기준 이상)이 없으면 근거 표시만 비워요
+        rule_ok = bool(chunks) and chunks[0]["score"] >= VERIFY_MIN_SCORE
+        return {"verified": bool(s.get("answer")), **({} if rule_ok else {"chunks": []})}
     ok = bool(chunks) and chunks[0]["score"] >= VERIFY_MIN_SCORE and bool(s.get("answer"))
     return {"verified": ok, "retries": s.get("retries", 0) + (0 if ok else 1)}
 

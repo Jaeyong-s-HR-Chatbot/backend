@@ -61,9 +61,9 @@ def run_pipeline(employee_id: str, role: str, question: str, own_name: str = "")
                 if s["verified"]:
                     break
             if not s.get("verified") and s.get("admin_result") is not None:
-                # 인사팀 both: 규정 근거는 못 찾았어도 집계 표는 돌려줌
+                # 인사팀: 맞는 규정을 못 찾았어도 집계 표는 돌려줌 (단순 현황 질문은 원래 규정이 필요 없어요)
                 s |= {"chunks": [], "verified": True, "kind": "answer",
-                      "answer": "규정 근거는 찾지 못했어요. 집계 결과만 알려 드려요.\n\n" + n._admin_table(s["admin_result"])}
+                      "answer": "집계 결과를 알려 드려요.\n\n" + n._admin_table(s["admin_result"])}
         if not s.get("verified") and s.get("kind") != "refused":
             s |= n.refuse(s)
 
