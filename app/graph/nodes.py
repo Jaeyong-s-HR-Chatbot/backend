@@ -18,7 +18,7 @@ from ..fake_data import HR_RECORDS
 from ..masking import mask_answer, mask_text, pseudonymize
 from . import llm_classify
 from . import retriever
-from .admin_classify import classify_admin
+from .admin_classify import classify_admin_state
 from .state import HRState
 
 log = logging.getLogger("hr_chat")
@@ -124,9 +124,24 @@ def _strip_personal_identifier_declarations(question: str) -> str:
     return "".join(kept)
 
 
+# 질문이 아닌 문장: 인사말·맞장구 ("안녕하세요", "네 감사합니다"), 소속·이름 소개 ("저는 인사팀 [이름]입니다.", "인사운영처 소속이에요.")
+_SMALL_TALK = re.compile(
+    r"\s*(?:(?:안녕하세요|안녕하십니까|안녕|반갑습니다|반가워요|네|넵|예|감사합니다|고맙습니다|감사해요|고마워요|"
+    r"알겠습니다|알겠어요|수고하세요|수고하셨습니다)[\s.!~^]*)+"
+)
+_SELF_INTRO = re.compile(
+    r"\s*(?:(?:저는|전|제\s*이름은)\s+[^?]{1,25}?|[^\s?]{1,15}\s*소속)\s*(?:입니다|이에요|예요|이고요|이랍니다)[\s.!~]*"
+)
+
+
+def _strip_small_talk(question: str) -> str:
+    parts = re.split(r"(?<=[.!?;\n])", question)
+    return "".join(p for p in parts if not (_SMALL_TALK.fullmatch(p) or _SELF_INTRO.fullmatch(p)))
+
+
 def _intent_question(question: str) -> str:
     question = _PERSONAL_IDENTIFIER_INTRO.sub("", question)
-    return _strip_personal_identifier_declarations(question)
+    return _strip_small_talk(_strip_personal_identifier_declarations(question))
 
 
 def has_question_content(question: str) -> bool:
@@ -167,8 +182,8 @@ def _classify_rule(s: HRState) -> HRState:
 
 
 def classify(s: HRState) -> HRState:
-    if s.get("role") == "hr_admin":                # 인사팀은 전용 분류 (역할은 토큰에서)
-        return classify_admin(question_text(s))
+    if s.get("role") == "hr_admin":                # 인사팀은 전용 분류 (역할은 토큰에서, 순서는 아래와 같음)
+        return classify_admin_state(s)
     if config.CLASSIFY_MODE == "rule":
         return _classify_rule(s)
 
@@ -740,12 +755,8 @@ def route_after_verify(s: HRState) -> str:
 
 # ───────────── refuse / sensitive ─────────────
 def refuse(s: HRState) -> HRState:
-    if s.get("intent") == "refuse" and s.get("role") == "hr_admin":
-        msg = "주민번호·계좌·주소·연락처는 챗봇으로 조회할 수 없어요. 인사시스템에서 권한 절차를 거쳐 확인해 주세요."
-    elif s.get("intent") == "refuse":
+    if s.get("intent") == "refuse":
         msg = "다른 직원의 정보나 권한 밖의 내용은 알려드릴 수 없어요. 필요하면 인사팀에 정식으로 요청해 주세요."
-    elif s.get("intent") == "unavailable":
-        msg = "이 데이터는 지금 챗봇이 조회할 수 있는 DB에 없어요. 담당 시스템(근태·인사시스템)에서 확인해 주세요."
     else:
         msg = "이 질문은 등록된 규정에서 근거를 찾지 못했어요. 정확한 내용은 인사팀에 확인해 주세요."
     return {"answer": msg, "kind": "refused", "chunks": []}

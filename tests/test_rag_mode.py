@@ -52,6 +52,10 @@ def test_rag_mode_falls_back_when_package_cannot_load(monkeypatch):
     monkeypatch.setenv("RAG_CHUNKS", "")              # 조각을 못 찾으면 rag 패키지가 오류를 내요
     monkeypatch.setenv("RAG_EMBED", "off")
     monkeypatch.setattr(config, "SEARCH_MODE", "rag")
+    # .env에 DB·청크 파일이 있어도 내장 예시 검색으로 넘어가는지 봐요 (앞 테스트가 채운 조문 캐시도 비움)
+    monkeypatch.setattr(config, "USE_DB", False)
+    monkeypatch.setattr(config, "RULES_CHUNKS_PATH", "")
+    retriever._chunks.cache_clear()
     retriever._rag.cache_clear()
     import rag.backend
     rag.backend._pipe = None
@@ -61,3 +65,4 @@ def test_rag_mode_falls_back_when_package_cannot_load(monkeypatch):
         assert hits and hits[0]["id"].startswith("sample-")
     finally:
         retriever._rag.cache_clear()
+        retriever._chunks.cache_clear()

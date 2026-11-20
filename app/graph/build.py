@@ -13,8 +13,9 @@ guard → classify ─┬─ rule ───────────────�
                   ├─ data ─→ admin_lookup ──────────────→ generate (+집계 표) → verify
                   ├─ both ─→ admin_lookup → retrieve → generate (+집계 표) → verify
                   │            └ 규정 근거를 못 찾아도 집계 표는 답함 ("근거 못 찾음" 표시)
-                  ├─ unavailable (DB에 없는 데이터) → refuse(안내) → log
-                  └─ refuse (주민번호·계좌 등 요청) → refuse → log
+                  ├─ lookup (본인 데이터) ─→ lookup → generate (직원과 같음)
+                  ├─ both (본인 데이터 + 규정, 집계 도구 없음) ─→ lookup → retrieve → … (직원과 같음)
+                  └─ out_of_scope (LLM 보조 분류에서만) → 안내 → log
 """
 from time import perf_counter
 
@@ -35,14 +36,14 @@ def run_pipeline(employee_id: str, role: str, question: str, own_name: str = "")
 
     if s["intent"] == "sensitive":
         s |= n.sensitive(s)
-    elif s["intent"] in ("refuse", "unavailable"):
+    elif s["intent"] == "refuse":
         s |= n.refuse(s)
     elif not n.has_question_content(s["masked_question"]):
         s |= n.refuse_no_question(s)
     elif s["intent"] == "out_of_scope":
         s |= n.out_of_scope(s)
     else:
-        if s["intent"] in ("lookup", "both") and s.get("role") != "hr_admin":
+        if s["intent"] in ("lookup", "both") and not s.get("admin_tool"):   # 본인 조회 (인사팀 본인 질문 포함)
             s |= n.lookup(s)
         if s["intent"] in ("data", "both") and s.get("admin_tool"):
             s |= n.admin_lookup(s)

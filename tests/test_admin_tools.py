@@ -69,6 +69,9 @@ def test_leave_by_dept_period_counts_only():
     assert r["건수"] > 0 and "이름" not in r["표"][0]
     s = at.leave_by_dept_period("2025-01-01", "2025-12-31", leave_type="생리휴가")
     assert sum(x["인원"] for x in s["표"]) > 0
+    both = at.leave_by_dept_period("2025-01-01", "2025-12-31", leave_type=["생리휴가", "보건휴가"])
+    assert both["기준"]["휴가종류"] == "생리휴가·보건휴가"
+    assert sum(x["인원"] for x in both["표"]) >= sum(x["인원"] for x in s["표"])
 
 
 def test_sensitive_leave_has_no_name_list():
