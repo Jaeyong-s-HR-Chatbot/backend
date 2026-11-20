@@ -56,10 +56,10 @@ def ask(q, user="E1003"):
     ("부서별 복지포인트 사용률", "data", "welfare_points_dept_usage"),
     ("복지포인트 많이 남았는데 곧 만료되는 사람", "data", "welfare_points_expiring"),
     ("남은 연차 10일 이상인 직원 명단이랑 촉진 통보는 언제까지 해야 돼?", "both", "leave_promotion_targets"),
-    ("연차 촉진 필요한 부서 어디야?", "data", "leave_promotion_targets"),
-    ("이번 주 52시간 넘길 것 같은 직원 있어?", "data", "weekly_hours_over"),
-    ("지각·조퇴 자주 하는 직원", "data", "late_early_frequent"),
-    ("출퇴근 기록 빠진 직원", "data", "attendance_missing"),
+    ("연차 촉진 필요한 부서 어디야?", "both", "leave_promotion_targets"),     # 근태·촉진 도구는 항상 both
+    ("이번 주 52시간 넘길 것 같은 직원 있어?", "both", "weekly_hours_over"),
+    ("지각·조퇴 자주 하는 직원", "both", "late_early_frequent"),
+    ("출퇴근 기록 빠진 직원", "both", "attendance_missing"),
 ])
 def test_admin_tool_picked(q, intent, tool):
     r = classify_admin(q, TODAY)
@@ -82,6 +82,12 @@ def test_attendance_params_from_question():
     assert r["admin_params"] == {"months": 6, "min_count": 5}
     r = classify_admin("출퇴근 기록 빠진 직원", TODAY)
     assert r["admin_params"] == {"month": "2026-10"}
+
+
+def test_always_both_tools_add_search_hint():
+    r = classify_admin("이번 주 52시간 넘길 것 같은 직원 있어?", TODAY)
+    assert r["intent"] == "both" and "연장근로" in r["search_hint"]
+    assert "search_hint" not in classify_admin("남은 연차 10일 이상인 직원 명단 뽑아줘", TODAY)
 
 
 def test_period_words():

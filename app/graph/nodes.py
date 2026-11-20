@@ -281,7 +281,8 @@ def _admin_table(r: dict, max_rows: int = 10) -> str:
 def retrieve(s: HRState) -> HRState:
     """TODO 교체: 이재용 님 리트리버 (BGE-M3 + BM25 → RRF → bge-reranker-v2-m3)"""
     wide = s.get("retries", 0) > 0
-    return {"chunks": retriever.search(s["masked_question"], k=5, wide=wide)}
+    query = f"{s['masked_question']} {s['search_hint']}" if s.get("search_hint") else s["masked_question"]
+    return {"chunks": retriever.search(query, k=5, wide=wide)}
 
 
 # ───────────── calc: 계산 Tool ─────────────
