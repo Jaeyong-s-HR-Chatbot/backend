@@ -26,8 +26,6 @@ class HRState(TypedDict, total=False):
     has_other_emp_id: bool     # 질문에서 타인 사번을 감지했는지
     # classify
     intent: Intent
-    classifier_tools: list[str] | None
-    classifier_calc: dict | None
     conf_doc: str              # 보안문서가 필요한 질문: labor_minutes(노사회의록) / discipline_minutes(징계회의록)
     conf_doc_role: str         # 그 문서를 볼 수 있는 역할 (HR_LABOR / HR_DISCIPLINE)
     sensitive_topic: bool     # 인사팀이 민감 주제를 물음 → 검색은 하되 로그는 [민감 주제 문의]로
