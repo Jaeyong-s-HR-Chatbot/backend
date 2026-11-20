@@ -163,6 +163,8 @@ def _validate_admin_params(tool: str, params) -> dict:
         if key in ("month", "pay_month"):          # "YYYY-MM" 문자열 인자
             ok = isinstance(value, str) and len(value) == 7 and value[4] == "-"
             coerced = value if ok and value[:4].isdigit() and value[5:].isdigit() else None
+        elif key == "leave_type" and isinstance(value, list):   # 휴가 종류 여러 개 ("생리휴가·보건휴가")
+            coerced = [v.strip() for v in value if isinstance(v, str) and v.strip()] or None
         else:
             coerced = _coerce(_param_kind(fn, key), value)
         if coerced is None:

@@ -47,6 +47,10 @@ REQUEST_TYPES = {"경조금": "경조금신청", "출장": "출장신청", "출�
                  "복직": "복직신청", "휴가": "휴가신청"}
 COURSE_TYPES = {"법정": "법정", "의무교육": "법정", "직무": "직무", "승진교육": "승진", "입문": "신규", "신규": "신규",
                 "리더십": "리더십"}
+# 규정만 묻는 말 ("보충해도 돼?", "줄여줄 수 있어?", "배정 기준"). 사람·집계를 묻는 말(DATA_WORDS)이 없으면 도구를 안 써요
+RULE_ASK = re.compile(r"해도\s*(?:돼|되)|수\s*있(?:어|나|는\s*경우|을까)|가능|기준|얼마\s*(?:줘|주|받)|해야\s*(?:돼|되|하)|되나|되는지")
+DATA_WORDS = ["명단", "누구", "몇 명", "인원", "현황", "대상자", "목록", "리스트", "직원", "사람", "부서별", "TOP",
+              "뽑아", "보여", "총액", "사용률", "이수율", "건수", "몇 건"]
 
 
 # ───────────── 기간 ─────────────
@@ -106,6 +110,9 @@ def pick_tool(q: str, today: date) -> tuple[str | None, dict]:
     year = start.year if p and start.year == end.year else None
     has = lambda *ws: any(w in q for w in ws)   # noqa: E731
 
+    if RULE_ASK.search(q) and not has(*DATA_WORDS):     # 규정만 묻는 질문은 도구 없이 rule로
+        return None, {}
+
     if has("결재", "대기", "승인 안", "처리 안", "미처리") and has("신청", "건"):
         rt = next((v for k, v in REQUEST_TYPES.items() if k in q), None)
         return "pending_requests", {"request_type": rt}
@@ -138,13 +145,18 @@ def pick_tool(q: str, today: date) -> tuple[str | None, dict]:
         if has("복직") and p:
             return "absence_list", {"asof": today, "return_from": start, "return_to": end}
         return "absence_list", {"asof": today}
-    if "정년" in q:
-        return "retirement_age_list", {"from_year": (start or today).year, "to_year": (end or today).year}
+    # 퇴직 유형별 인원은 "정년"이 예시로 들어가도 퇴직 집계 ("퇴직 유형별(정년·의원 등) 인원")
     if has("퇴사자", "퇴직자", "퇴직 유형", "퇴직유형") and has("부서", "유형", "몇 명", "인원", "많은"):
         s, e = p or (date(today.year, 1, 1), today)
         return "retirements_by_dept", {"start": s, "end": e}
+    if "정년" in q:
+        return "retirement_age_list", {"from_year": (start or today).year, "to_year": (end or today).year}
     if "수습" in q:
         return "probation_ending", {"asof": today, "within_days": _num(r"(\d+)\s*일", q) or 30}
+    # 교육 미이수는 입사자 단어보다 먼저 ("신규입사자 입문 과정 안 들은 사람")
+    if has("교육", "이수", "과정") and has("미이수", "안 들은", "안들은", "못 들은", "이수 안"):
+        ct = next((v for k, v in COURSE_TYPES.items() if k in q), "법정")
+        return "training_incomplete", {"year": year, "course_type": ct}
     if "입사자" in q or ("입사" in q and has("몇 명", "누구", "명단")):
         s, e = p or _month(today.year, today.month)
         return "hires_in_period", {"start": s, "end": e}
@@ -157,8 +169,6 @@ def pick_tool(q: str, today: date) -> tuple[str | None, dict]:
         ct = next((v for k, v in COURSE_TYPES.items() if k in q), "법정")
         if "이수율" in q:
             return "dept_training_rate", {"year": year, "course_type": ct}
-        if has("미이수", "안 들은", "안들은", "못 들은", "이수 안"):
-            return "training_incomplete", {"year": year, "course_type": ct}
 
     if "실수령" in q and has("바뀐", "변한", "차이", "변화", "늘어난", "줄어든"):
         rate = _num(r"(\d+)\s*%", q)
@@ -168,8 +178,11 @@ def pick_tool(q: str, today: date) -> tuple[str | None, dict]:
         return "payroll_dept_totals", {"pay_month": pm}
 
     lt = _first(LEAVE_TYPES, q)
-    if lt and p and has("부서", "몰린", "현황", "몇 명"):
-        return "leave_by_dept_period", {"start": start, "end": end, "leave_type": None if lt == "연차" else lt}
+    if lt and has("부서", "몰린", "현황", "몇 명") and (p or has("현황", "부서별")):
+        s, e = p or (date(today.year, 1, 1), today)          # 기간이 없으면 올해 1월 1일부터 오늘까지
+        types = [t for t in LEAVE_TYPES if t in q and t != "연차"]
+        leave_type = None if not types else types[0] if len(types) == 1 else types
+        return "leave_by_dept_period", {"start": s, "end": e, "leave_type": leave_type}
     if lt and p and has("쓴 사람", "사용자", "명단", "누구"):
         return "leave_people_period", {"start": start, "end": end, "leave_type": lt}
     if has("휴가자", "휴가 몰린", "휴가가 몰린") and p:
