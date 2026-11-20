@@ -6,3 +6,7 @@ __pycache__/
 .rag_cache/
 # LLM classification response cache (evaluation only)
 eval/intent/cache/
+data/
+*.jsonl
+confidential/rules/org_counts.csv
+models/

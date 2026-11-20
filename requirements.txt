@@ -7,6 +7,11 @@ httpx>=0.27                 # Ollama 호출, 테스트
 langchain-core>=0.3
 langchain-openai>=0.2
 psycopg[binary]>=3.1        # PostgreSQL 연결 (HRDB_URL을 쓸 때)
+# 기밀문서 PDF 추출·NER
+pdfplumber>=0.11
+PyYAML>=6
+torch>=2.6
+transformers>=4.51,<6
 # 벡터 검색을 켜려면(선택): pip install sentence-transformers  → BGE-M3로 질문을 임베딩
 # rag 패키지로 검색하려면(SEARCH_MODE=rag): pip install -r ../rag-main/requirements.txt  (최소: numpy kiwipiepy)
 # 테스트

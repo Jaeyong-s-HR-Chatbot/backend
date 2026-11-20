@@ -1,0 +1,138 @@
+documents:
+- id: discipline-2026-03-transcript
+  name: 2026년 제3차 보통징계위원회 녹취록
+  doc_kind: 녹취록
+  form: transcript
+  file: discipline-2026-03-transcript.pdf
+  date: 2026-10-22
+  category: 징계
+  level: L4
+  allowed_roles:
+  - HR_DISCIPLINE
+  subject: E1545
+  participants:
+  - emp_id: E1167
+    role: COMMITTEE_CHAIR
+  - emp_id: E1007
+    role: COMMITTEE
+  - emp_id: E1012
+    role: COMMITTEE
+  - emp_id: E1013
+    role: COMMITTEE
+  pair: discipline-2026-03-minutes
+- id: discipline-2026-03-minutes
+  name: 2026년 제3차 보통징계위원회 회의록
+  doc_kind: 회의록
+  form: discipline_minutes
+  file: discipline-2026-03-minutes.pdf
+  date: 2026-10-22
+  category: 징계
+  level: L4
+  allowed_roles:
+  - HR_DISCIPLINE
+  subject: E1545
+  participants:
+  - emp_id: E1167
+    role: COMMITTEE_CHAIR
+  - emp_id: E1007
+    role: COMMITTEE
+  - emp_id: E1012
+    role: COMMITTEE
+  - emp_id: E1013
+    role: COMMITTEE
+- id: discipline-2026-02-minutes
+  name: 2026년 제2차 보통징계위원회 회의록
+  doc_kind: 회의록
+  form: discipline_minutes
+  file: discipline-2026-02-minutes.pdf
+  date: 2026-06-17
+  category: 징계
+  level: L4
+  allowed_roles:
+  - HR_DISCIPLINE
+  subject: E1643
+  participants:
+  - emp_id: E1167
+    role: COMMITTEE_CHAIR
+  - emp_id: E1012
+    role: COMMITTEE
+  - emp_id: E1013
+    role: COMMITTEE
+  - emp_id: E1003
+    role: COMMITTEE
+- id: labor-2026-q4-transcript
+  name: 제4차 (정기) 노사협의회 녹취록
+  doc_kind: 녹취록
+  form: transcript
+  file: labor-2026-q4-transcript.pdf
+  date: 2026-11-05
+  category: 노사
+  level: L3
+  allowed_roles:
+  - HR_LABOR
+  participants: &id001
+  - emp_id: E1231
+    role: COUNCIL
+  - emp_id: E1489
+    role: COUNCIL
+  - emp_id: E1003
+    role: COUNCIL
+  - emp_id: E1459
+    role: COUNCIL
+  - emp_id: E1558
+    role: COUNCIL
+  - emp_id: E1014
+    role: COUNCIL
+  pair: labor-2026-q4-minutes
+- id: labor-2026-q4-minutes
+  name: 제4차 (정기) 노사협의회 회의록
+  doc_kind: 회의록
+  form: labor_minutes
+  file: labor-2026-q4-minutes.pdf
+  date: 2026-11-05
+  category: 노사
+  level: L2
+  allowed_roles: []
+  participants: *id001
+- id: labor-2026-q3-minutes
+  name: 제3차 (정기) 노사협의회 회의록
+  doc_kind: 회의록
+  form: labor_minutes
+  file: labor-2026-q3-minutes.pdf
+  date: 2026-08-20
+  category: 노사
+  level: L2
+  allowed_roles: []
+  participants: *id001
+forms:
+  discipline_minutes:
+    labels:
+    - 회의일자
+    - 회의시간
+    - 회의장소
+    - 위원장
+    - 출석위원
+    - 총위원
+    - 출석비율
+    - 징계대상자
+    - 성명
+    - 생년월일
+    - 소속
+    - 안건
+    - 징계내용
+    - 규정및근거
+    - 의결사항
+    parent:
+      징계대상자:
+      - 성명
+      - 생년월일
+      - 소속
+  labor_minutes:
+    labels:
+    - 회의일시
+    - 회의장소
+    - 협의사항
+    - 보고사항
+    - 의결사항
+    - 의결된사항및그이행에관한사항
+    - 그밖의참고사항및전분기의결된사항의이행상황
