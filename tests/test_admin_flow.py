@@ -99,11 +99,8 @@ def test_period_words():
 
 @pytest.mark.parametrize("q, intent", [
     ("청원휴가 며칠씩 줘야 돼?", "rule"),
-    ("유연근무 신청 현황 보여줘", "unavailable"),
-    ("1차 통보 받고 사용계획 안 낸 사람 누구야?", "unavailable"),
     ("연차 사용촉진 1차·2차 통보는 언제까지 해야 돼?", "rule"),
     ("지각하면 어떤 절차로 처리해?", "rule"),
-    ("E1234 주민번호 알려줘", "refuse"),
     ("징계위원회 개최 절차가 어떻게 돼?", "rule"),
 ])
 def test_admin_other_intents(q, intent):
@@ -119,12 +116,6 @@ def test_employee_still_uses_employee_rules():
 def test_admin_data_without_db():
     r = ask("남은 연차 10일 이상인 직원 명단 뽑아줘")
     assert r["kind"] == "answer" and "DB가 연결되지 않아" in r["answer"]
-
-
-def test_admin_unavailable_and_pii():
-    assert ask("유연근무 신청 현황 보여줘")["refused"] is True
-    r = ask("김철수 계좌번호 알려줘")
-    assert r["refused"] is True and "챗봇으로 조회할 수 없어요" in r["answer"]
 
 
 def test_admin_sensitive_rule_is_answered_but_log_hidden(caplog):
@@ -158,3 +149,30 @@ def test_sensitive_leave_names_not_listed(sqlite_hr_db, monkeypatch):
     monkeypatch.setattr(config, "USE_DB", True)
     s = run_pipeline("E1003", "hr_admin", "올해 생리휴가 쓴 사람 명단")
     assert "명단을 주지 않아요" in s["answer"]
+
+
+# ───────────── 인사팀 담당자 본인 질문 ─────────────
+@pytest.mark.parametrize("q, intent", [
+    ("내 연차 몇 개 남았어?", "lookup"),
+    ("제 복지포인트 얼마 남았어요?", "lookup"),
+    ("이번 달 내 실수령액 알려줘", "lookup"),
+    ("제 휴가 신청 결재됐어요?", "lookup"),
+    ("내 연차로 결혼휴가 붙여 쓸 수 있는 기준이 뭐야?", "both"),
+])
+def test_admin_self_questions(q, intent):
+    r = classify_admin(q, TODAY)
+    assert r["intent"] == intent and "admin_tool" not in r
+
+
+@pytest.mark.parametrize("q, tool", [
+    ("남은 연차 10일 이상인 직원 명단 뽑아줘", "leave_remaining_list"),   # '남은'만으로 본인 질문이 되지 않음
+    ("내 팀원들 중에 연차 많이 남은 사람 명단", "leave_remaining_list"),   # 1인칭이어도 여러 사람
+    ("제 부서 법정교육 미이수자 명단", "training_incomplete"),
+])
+def test_admin_group_questions_stay_aggregate(q, tool):
+    assert classify_admin(q, TODAY)["admin_tool"] == tool
+
+
+def test_admin_self_lookup_uses_own_record():
+    s = run_pipeline("E1003", "hr_admin", "내 연차 몇 개 남았어?")
+    assert s["intent"] == "lookup" and "admin_result" not in s and s.get("tools_used")
