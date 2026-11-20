@@ -81,19 +81,21 @@ def leave_remaining_list(year: int | None = None, min_days: float = 10, limit: i
     return _result({"연도": year, "잔여일수_이상": min_days}, out, total)
 
 
-def leave_by_dept_period(start: date, end: date, leave_type: str | None = None) -> dict:
-    """기간 안에 휴가 쓰는(쓴) 인원을 부서별로. 휴가자 몰린 부서, 공가·생리휴가 사용 현황. 인원수만 돌려줌. [10, 14, 30]"""
+def leave_by_dept_period(start: date, end: date, leave_type: str | list[str] | None = None) -> dict:
+    """기간 안에 휴가 쓰는(쓴) 인원을 부서별로. 휴가자 몰린 부서, 공가·생리휴가 사용 현황. 인원수만 돌려줌. [10, 14, 30]
+    leave_type은 하나 또는 여러 개 ("생리휴가·보건휴가 사용 현황")."""
     start, end = _date(start), _date(end)
     sql = (f"SELECT d.dept_name, count(DISTINCT lh.emp_id) AS n, sum(lh.days) AS days "
            f"FROM hr.leave_history lh JOIN hr.employees e ON e.emp_id = lh.emp_id {_DEPT} "
            "WHERE lh.status = '승인' AND lh.start_date <= %s AND lh.end_date >= %s")
     params: tuple = (end, start)
-    if leave_type:
-        sql += " AND lh.leave_type = %s"
-        params += (leave_type,)
+    types = [leave_type] if isinstance(leave_type, str) else list(leave_type or [])
+    if types:
+        sql += f" AND lh.leave_type IN ({', '.join(['%s'] * len(types))})"
+        params += tuple(types)
     rows = db.fetch_all(sql + " GROUP BY d.dept_name ORDER BY n DESC, d.dept_name", params)
     out = [{"부서": r["dept_name"], "인원": r["n"], "휴가일수": _num(r["days"])} for r in rows]
-    return _result({"시작": start, "끝": end, "휴가종류": leave_type}, out)
+    return _result({"시작": start, "끝": end, "휴가종류": "·".join(types) or None}, out)
 
 
 def leave_people_period(start: date, end: date, leave_type: str, limit: int = 50) -> dict:

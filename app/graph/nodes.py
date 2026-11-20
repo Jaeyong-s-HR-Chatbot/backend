@@ -124,9 +124,24 @@ def _strip_personal_identifier_declarations(question: str) -> str:
     return "".join(kept)
 
 
+# 질문이 아닌 문장: 인사말·맞장구 ("안녕하세요", "네 감사합니다"), 소속·이름 소개 ("저는 인사팀 [이름]입니다.", "인사운영처 소속이에요.")
+_SMALL_TALK = re.compile(
+    r"\s*(?:(?:안녕하세요|안녕하십니까|안녕|반갑습니다|반가워요|네|넵|예|감사합니다|고맙습니다|감사해요|고마워요|"
+    r"알겠습니다|알겠어요|수고하세요|수고하셨습니다)[\s.!~^]*)+"
+)
+_SELF_INTRO = re.compile(
+    r"\s*(?:(?:저는|전|제\s*이름은)\s+[^?]{1,25}?|[^\s?]{1,15}\s*소속)\s*(?:입니다|이에요|예요|이고요|이랍니다)[\s.!~]*"
+)
+
+
+def _strip_small_talk(question: str) -> str:
+    parts = re.split(r"(?<=[.!?;\n])", question)
+    return "".join(p for p in parts if not (_SMALL_TALK.fullmatch(p) or _SELF_INTRO.fullmatch(p)))
+
+
 def _intent_question(question: str) -> str:
     question = _PERSONAL_IDENTIFIER_INTRO.sub("", question)
-    return _strip_personal_identifier_declarations(question)
+    return _strip_small_talk(_strip_personal_identifier_declarations(question))
 
 
 def has_question_content(question: str) -> bool:

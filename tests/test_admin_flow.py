@@ -176,3 +176,33 @@ def test_admin_group_questions_stay_aggregate(q, tool):
 def test_admin_self_lookup_uses_own_record():
     s = run_pipeline("E1003", "hr_admin", "내 연차 몇 개 남았어?")
     assert s["intent"] == "lookup" and "admin_result" not in s and s.get("tools_used")
+
+
+@pytest.mark.parametrize("q", [
+    "휴직자 자리 결원 보충해도 돼?",
+    "질병휴직 중엔 보수 얼마 줘?",
+    "수습기간 줄여줄 수 있는 경우가 있어?",
+    "근속연수별 복지포인트 배정 기준",
+    "휴직자가 휴직 목적 외로 쓰는지 점검해야 돼?",
+])
+def test_rule_only_questions_do_not_pick_tool(q):
+    """규정만 묻는 질문은 도구 단어(휴직자·수습·복지포인트)가 있어도 집계 도구를 안 써요"""
+    r = classify_admin(q, TODAY)
+    assert r["intent"] == "rule" and "admin_tool" not in r
+
+
+def test_tool_picks_with_overlapping_words():
+    r = classify_admin("퇴직 유형별(정년·의원 등) 인원", TODAY)
+    assert r["admin_tool"] == "retirements_by_dept"
+    r = classify_admin("신규입사자 입문 과정 아직 안 들은 사람", TODAY)
+    assert r["admin_tool"] == "training_incomplete" and r["admin_params"]["course_type"] == "신규"
+    r = classify_admin("생리휴가·보건휴가 사용 현황 부서별로", TODAY)
+    assert r["admin_tool"] == "leave_by_dept_period"
+    assert r["admin_params"] == {"start": date(2026, 1, 1), "end": TODAY, "leave_type": ["생리휴가", "보건휴가"]}
+
+
+@pytest.mark.parametrize("q", ["안녕하세요", "네 감사합니다", "저는 인사팀 [이름]입니다.", "인사운영처 소속이에요."])
+def test_greeting_and_intro_have_no_question(q):
+    from app.graph.nodes import has_question_content
+    assert not has_question_content(q)
+    assert has_question_content("안녕하세요. 연차 사용률 낮은 부서 알려줘")
