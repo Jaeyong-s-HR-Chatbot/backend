@@ -120,7 +120,7 @@ def test_llm_mode_falls_back_to_rules_on_failure(monkeypatch, caplog):
     assert "LLM 의도 분류에 실패해 규칙 결과로 대체합니다" in caplog.text
 
 
-def test_classifier_receives_only_masked_question(monkeypatch):
+def test_classifier_receives_original_question(monkeypatch):
     monkeypatch.setattr(config, "CLASSIFY_MODE", "hybrid")
     received = []
     monkeypatch.setattr(
@@ -132,8 +132,7 @@ def test_classifier_receives_only_masked_question(monkeypatch):
 
     nodes.classify(_state("제 번호 010-1234-5678인데 출장비 기준을 알려 줘"))
 
-    assert received and "[전화]" in received[0]
-    assert "010-1234-5678" not in received[0]
+    assert received and "010-1234-5678" in received[0]   # 질문은 마스킹하지 않아요
 
 
 def test_invalid_tool_names_are_dropped():

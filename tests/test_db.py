@@ -112,7 +112,7 @@ def test_no_evidence_refused():
 def test_chat_log_masks_question_and_employee_id(monkeypatch):
     monkeypatch.setattr(config, "CHAT_LOG_DB", True)
     result = ask("제 전화번호 010-1234-5678인데, 병가 때 진단서 필요해?")
-    assert result["pii_notice"] == "입력하신 개인정보(전화)는 가려서 처리했어요."
+    assert result["pii_notice"] is None          # 질문은 안 가리고, 로그 저장 때만 가림
     row = db.fetch_one(
         "SELECT user_pseudo_id, question_masked, answer_masked, intent, tools_used "
         "FROM app.chat_log "

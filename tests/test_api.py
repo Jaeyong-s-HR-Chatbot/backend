@@ -346,7 +346,17 @@ def test_pii_masked_in_log(caplog):
     assert "010-1234-5678" not in caplog.text
     assert "E1584" not in caplog.text
     assert "[전화]" in caplog.text and "[본인사번]" in caplog.text
-    assert result["pii_notice"] == "입력하신 개인정보(전화, 본인사번)는 가려서 처리했어요."
+    assert result["pii_notice"] is None          # 질문은 가리지 않고 로그에 저장할 때만 가려요
+
+
+def test_pipeline_uses_original_question_but_log_is_masked(monkeypatch, caplog):
+    caplog.set_level("INFO", logger="hr_chat")
+    seen = []
+    original_retrieve = nodes.retrieve
+    monkeypatch.setattr(nodes, "retrieve", lambda s: seen.append(nodes.question_text(s)) or original_retrieve(s))
+    run_pipeline("E1584", "employee", "제 번호 010-1234-5678인데 출장비 기준 알려줘", own_name="이서준")
+    assert seen and "010-1234-5678" in seen[0]
+    assert "010-1234-5678" not in caplog.text and "[전화]" in caplog.text
 
 
 def test_chat_without_pii_has_null_notice():
