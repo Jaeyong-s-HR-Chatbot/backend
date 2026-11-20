@@ -16,7 +16,7 @@ from .. import config
 from .. import calc_rules
 from ..fake_data import HR_RECORDS
 from ..masking import mask_answer, mask_text, pseudonymize
-from . import llm_classify
+from . import conf_doc, llm_classify
 from . import retriever
 from .admin_classify import classify_admin_state
 from .state import HRState
@@ -47,7 +47,7 @@ def question_text(s: HRState) -> str:
 
 
 # ───────────── classify: 의도 분류 (규칙) ─────────────
-_SENSITIVE = ["괴롭힘", "성희롱", "성추행", "폭언", "징계", "고충", "따돌림", "부당"]
+_SENSITIVE = ["괴롭힘", "성희롱", "성추행", "폭언", "고충", "따돌림", "부당"]   # 징계는 규정 질문이 많아 민감 단어에서 뺌
 _OTHER_PERSON = ["다른 직원", "다른 사람", "남의 ", "옆팀", "옆 팀"]
 _TITLE = r"(?:사원|주임|대리|과장|차장|부장|팀장|본부장|님|씨)"
 _PRIVATE = r"(?:연봉|급여|월급|연차|수당|평가|인사고과|주민번호|계좌|주소|전화번호|휴직)"
@@ -182,6 +182,12 @@ def _classify_rule(s: HRState) -> HRState:
 
 
 def classify(s: HRState) -> HRState:
+    """0. 보안문서(노사회의록·징계회의록)가 필요한 질문인지 먼저 표시 → 1. 의도 분류 (임직원·인사팀 공통)"""
+    conf = conf_doc.detect(question_text(s))
+    return {**_classify_intent(s), **conf}
+
+
+def _classify_intent(s: HRState) -> HRState:
     if s.get("role") == "hr_admin":                # 인사팀은 전용 분류 (역할은 토큰에서, 순서는 아래와 같음)
         return classify_admin_state(s)
     if config.CLASSIFY_MODE == "rule":

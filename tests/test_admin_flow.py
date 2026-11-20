@@ -120,9 +120,17 @@ def test_admin_data_without_db():
 
 def test_admin_sensitive_rule_is_answered_but_log_hidden(caplog):
     caplog.set_level("INFO", logger="hr_chat")
-    s = run_pipeline("E1003", "hr_admin", "징계위원회 개최 절차가 어떻게 돼?")
+    s = run_pipeline("E1003", "hr_admin", "성희롱 고충 처리 절차가 어떻게 돼?")
     assert s["intent"] == "rule" and s["kind"] != "sensitive"
-    assert "[민감 주제 문의]" in caplog.text and "징계위원회" not in caplog.text
+    assert "[민감 주제 문의]" in caplog.text and "성희롱" not in caplog.text
+
+
+def test_discipline_is_not_sensitive_word():
+    """징계는 규정 질문이 많아 민감 단어가 아니에요 (임직원·인사팀 모두)"""
+    from app.graph.admin_classify import classify_admin
+    assert classify_admin("징계위원회 개최 절차가 어떻게 돼?", TODAY)["sensitive_topic"] is False
+    s = run_pipeline("E1307", "employee", "징계 시효가 몇 년이야?")
+    assert s["intent"] == "rule"
 
 
 # ───────────── 흐름 (가짜 HR CSV를 SQLite로) ─────────────
