@@ -14,8 +14,8 @@ from datetime import date, timedelta
 
 SENSITIVE = ["괴롭힘", "성희롱", "성추행", "폭언", "징계", "고충", "따돌림", "부당", "갑질", "자살", "우울"]
 PII_REQUEST = ["주민번호", "주민등록번호", "계좌", "주소", "전화번호", "연락처", "휴대폰"]
-# 지금 DB나 도구로 답할 수 없는 데이터 (관리자 질문셋 '불가'·attendance 기반 질문)
-UNAVAILABLE = ["유연근무", "52시간", "출퇴근 기록", "지각", "조퇴", "초과근무 사전", "근로시간 단축", "통보 이력",
+# 지금 DB나 도구로 답할 수 없는 데이터 (관리자 질문셋 '불가'). 출퇴근 기록(hr.attendance)은 근태 도구로 답해요.
+UNAVAILABLE = ["유연근무", "초과근무 사전", "근로시간 단축", "통보 이력",
                "사용계획", "개인정보 조회했", "누가 조회", "특수건강진단"]
 RULE_WORDS = ["규정", "기준", "언제까지", "어떻게", "절차", "해야", "방법", "몇 일 전", "며칠 전", "조건", "근거"]
 LEAVE_TYPES = ["생리휴가", "보건휴가", "난임치료휴가", "병가", "공가", "청원", "장기재직", "포상휴가", "가족돌봄",
@@ -91,6 +91,18 @@ def pick_tool(q: str, today: date) -> tuple[str | None, dict]:
         if has("만료", "소멸", "남았"):
             return "welfare_points_expiring", {"asof": today}
         return "welfare_points_dept_usage", {"year": year}
+
+    if "촉진" in q and has("대상", "명단", "누구", "직원", "부서", "필요", "몇 명"):
+        return "leave_promotion_targets", {"asof": today, "min_days": _num(r"(\d+)\s*일\s*이상", q, float)}
+
+    if has("52시간", "주 52", "연장근로 초과", "연장근로 한도 넘", "근로시간 초과"):
+        return "weekly_hours_over", {"week_start": start or today, "limit_hours": 52}
+    if has("지각", "조퇴") and not has("규정", "절차", "징계", "어떻게"):
+        return "late_early_frequent", {"months": _num(r"(\d+)\s*(?:개월|달)", q) or 3,
+                                       "min_count": _num(r"(\d+)\s*(?:회|번)", q) or 3}
+    if has("출퇴근 기록", "출근 기록", "퇴근 기록") and has("빠진", "누락", "없는", "안 찍", "비어"):
+        s = start or _month(today.year, today.month - 1)[0]
+        return "attendance_missing", {"month": f"{s.year}-{s.month:02d}"}
 
     if "연차" in q and has("사용률", "평균", "부서별", "많이 쓴", "적게 쓴"):
         rate = _num(r"(\d+)\s*%", q)

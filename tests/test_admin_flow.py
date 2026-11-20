@@ -55,7 +55,11 @@ def ask(q, user="E1003"):
     ("지난달보다 실수령액 30% 넘게 바뀐 직원", "data", "net_pay_change"),
     ("부서별 복지포인트 사용률", "data", "welfare_points_dept_usage"),
     ("복지포인트 많이 남았는데 곧 만료되는 사람", "data", "welfare_points_expiring"),
-    ("남은 연차 10일 이상인 직원 명단이랑 촉진 통보는 언제까지 해야 돼?", "both", "leave_remaining_list"),
+    ("남은 연차 10일 이상인 직원 명단이랑 촉진 통보는 언제까지 해야 돼?", "both", "leave_promotion_targets"),
+    ("연차 촉진 필요한 부서 어디야?", "data", "leave_promotion_targets"),
+    ("이번 주 52시간 넘길 것 같은 직원 있어?", "data", "weekly_hours_over"),
+    ("지각·조퇴 자주 하는 직원", "data", "late_early_frequent"),
+    ("출퇴근 기록 빠진 직원", "data", "attendance_missing"),
 ])
 def test_admin_tool_picked(q, intent, tool):
     r = classify_admin(q, TODAY)
@@ -71,6 +75,15 @@ def test_admin_params_from_question():
     assert (r["admin_params"]["start"], r["admin_params"]["end"]) == (date(2026, 11, 23), date(2026, 11, 29))
 
 
+def test_attendance_params_from_question():
+    r = classify_admin("이번 주 52시간 넘길 것 같은 직원 있어?", TODAY)
+    assert r["admin_params"] == {"week_start": date(2026, 11, 16), "limit_hours": 52}   # 이번 주 월요일
+    r = classify_admin("최근 6개월 지각 5회 이상인 직원", TODAY)
+    assert r["admin_params"] == {"months": 6, "min_count": 5}
+    r = classify_admin("출퇴근 기록 빠진 직원", TODAY)
+    assert r["admin_params"] == {"month": "2026-10"}
+
+
 def test_period_words():
     assert period("다음 달", TODAY) == (date(2026, 12, 1), date(2026, 12, 31))
     assert period("지난달", date(2026, 1, 5)) == (date(2025, 12, 1), date(2025, 12, 31))
@@ -81,7 +94,9 @@ def test_period_words():
 @pytest.mark.parametrize("q, intent", [
     ("청원휴가 며칠씩 줘야 돼?", "rule"),
     ("유연근무 신청 현황 보여줘", "unavailable"),
-    ("이번 주 52시간 넘길 것 같은 직원 있어?", "unavailable"),
+    ("1차 통보 받고 사용계획 안 낸 사람 누구야?", "unavailable"),
+    ("연차 사용촉진 1차·2차 통보는 언제까지 해야 돼?", "rule"),
+    ("지각하면 어떤 절차로 처리해?", "rule"),
     ("E1234 주민번호 알려줘", "refuse"),
     ("징계위원회 개최 절차가 어떻게 돼?", "rule"),
 ])

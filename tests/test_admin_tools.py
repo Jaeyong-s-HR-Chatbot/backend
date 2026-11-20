@@ -116,6 +116,51 @@ def test_hr_events_promotion():
     assert r["건수"] > 0 and "직급변경" in r["표"][0]
 
 
+# ───────────── 근태 ─────────────
+# 기대값은 RAG-hyerim eval/golden/admin_golden_set.csv (A-017, A-021, A-022)와 같아요.
+def test_weekly_hours_over_falls_back_to_last_week_with_data():
+    r = at.weekly_hours_over(ASOF, limit_hours=52)
+    assert r["건수"] == 3 and r["기준"]["주"] == "2026-11-02~2026-11-08"
+    assert r["기준"]["요청 주"] == "2026-11-09~2026-11-15" and "주의" in r
+    assert all(x["연장근로"] > 12 for x in r["표"]) and sum(r["부서별"].values()) == 3
+    past = at.weekly_hours_over("2026-11-04")          # 기록이 있는 주는 그대로, 주의 없음
+    assert past["기준"]["주"] == "2026-11-02~2026-11-08" and "주의" not in past
+
+
+def test_late_early_frequent():
+    r = at.late_early_frequent(months=3, min_count=3, asof=ASOF)
+    assert r["건수"] == 81 and r["기준"]["기간"] == "2026-08-10~2026-11-09"
+    counts = [x["지각"] for x in r["표"]]
+    assert counts == sorted(counts, reverse=True) and min(counts) >= 3
+
+
+def test_attendance_missing():
+    r = at.attendance_missing("2026-10")
+    assert r["건수"] == 0 and r["기준"]["월"] == "2026-10"
+
+
+def test_months_ago_clamps_day():
+    assert at._months_ago(date(2026, 5, 31), 3) == date(2026, 2, 28)
+    assert at._months_ago(date(2026, 1, 15), 1) == date(2025, 12, 15)
+
+
+# ───────────── 연차 사용 촉진 ─────────────
+def test_leave_promotion_targets():
+    r = at.leave_promotion_targets(ASOF, min_days=10)
+    assert r["단계"]["현재 단계"] == "통보 기한 지남" and r["단계"]["연차 소멸일"] == "2026-12-31"
+    assert r["건수"] == sum(x["대상자"] for x in r["표"])
+    assert all(x["촉진필요"] == ("예" if x["대상자"] else "아니요") for x in r["표"])
+    assert all(x["잔여일수"] >= 10 for x in r["명단"]) and len(r["명단"]) <= 20
+    # 1년 미만 입사자는 빠지므로 잔여 10일 이상 전체 명단보다 같거나 적어요
+    assert r["건수"] <= at.leave_remaining_list(2026, min_days=10)["건수"]
+
+
+def test_promotion_stage_by_date():
+    assert at._promotion_stage(date(2026, 6, 30))["현재 단계"] == "1차 통보 전"
+    assert at._promotion_stage(date(2026, 7, 5))["현재 단계"] == "1차 통보 기간"
+    assert at._promotion_stage(date(2026, 10, 31))["현재 단계"] == "2차 통보 기간"
+
+
 # ───────────── 교육·급여·복지 ─────────────
 def test_training():
     inc = at.training_incomplete(course_type="법정", limit=10)

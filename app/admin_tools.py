@@ -297,10 +297,156 @@ def welfare_points_expiring(asof: date | None = None, within_days: int = 60, min
     return _result({"기준일": asof, "며칠안": within_days, "잔여_이상": min_remaining}, out, total)
 
 
+# ───────────── 근태(출퇴근 기록) ─────────────
+# hr.attendance: 일근자 평일 출퇴근 기록. status = 정상 / 지각 / 오전반차 / 오후반차 (조퇴 표시는 없음).
+# overtime_hours는 하루 연장근로(18시 이후), night_hours는 그중 22시 이후라 연장에 포함돼요.
+_REGULAR_WEEK_HOURS = 40      # 근로기준법 제50조 1주 법정근로
+_HALF_DAY = ("오전반차", "오후반차")
+
+
+def _months_ago(d: date, months: int) -> date:
+    y, m = divmod(d.year * 12 + d.month - 1 - months, 12)
+    m += 1
+    last = (date(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1)).day
+    return date(y, m, min(d.day, last))
+
+
+def _attendance_last_day() -> date | None:
+    r = db.fetch_one("SELECT max(work_date) AS d FROM hr.attendance")
+    return _date(r["d"]) if r and r["d"] else None
+
+
+def weekly_hours_over(week_start: date | None = None, limit_hours: float = 52, limit: int = 50) -> dict:
+    """한 주(월~일) 연장근로가 limit_hours-40시간(52면 12시간)을 넘은 직원. 그 주 기록이 없으면 기록이 있는 마지막 주. [17]"""
+    monday = _date(week_start or date.today())
+    monday -= timedelta(days=monday.weekday())
+    cond: dict = {}
+    last = _attendance_last_day()
+    if last and last < monday:                       # 아직 기록이 없는 주 → 기록이 있는 마지막 주로
+        cond["요청 주"] = f"{monday}~{monday + timedelta(days=6)}"
+        monday = last - timedelta(days=last.weekday())
+    sunday = monday + timedelta(days=6)
+    ot_limit = limit_hours - _REGULAR_WEEK_HOURS
+    rows = db.fetch_all(
+        f"SELECT e.emp_id, e.name, d.dept_name, e.grade, a.status, a.overtime_hours, a.night_hours "
+        f"FROM hr.attendance a JOIN hr.employees e ON e.emp_id = a.emp_id {_DEPT} "
+        f"WHERE a.work_date >= %s AND a.work_date <= %s AND {_ACTIVE}", (monday, sunday))
+    week: dict[str, dict] = {}
+    for r in rows:
+        w = week.setdefault(r["emp_id"], {"r": r, "ot": 0.0, "night": 0.0, "work": 0.0, "days": 0})
+        ot = float(r["overtime_hours"] or 0)
+        w["ot"] += ot
+        w["night"] += float(r["night_hours"] or 0)
+        w["work"] += (4 if r["status"] in _HALF_DAY else 8) + ot
+        w["days"] += 1
+    over = sorted((w for w in week.values() if w["ot"] > ot_limit), key=lambda w: (-w["ot"], w["r"]["emp_id"]))
+    out = [{**_person(w["r"]), "연장근로": round(w["ot"], 1), "야간근로": round(w["night"], 1),
+            "주근로시간": round(w["work"], 1), "근무일수": w["days"]} for w in over]
+    by_dept: dict[str, int] = {}
+    for x in out:
+        by_dept[x["부서"]] = by_dept.get(x["부서"], 0) + 1
+    result = {**_result({**cond, "주": f"{monday}~{sunday}", "주 한도": limit_hours, "연장근로_초과": ot_limit},
+                        out[:limit], len(out)), "부서별": by_dept}
+    if "요청 주" in cond:
+        result["주의"] = f"출퇴근 기록이 {last}까지라 요청한 주는 아직 기록이 없어요. 기록이 있는 마지막 주 기준이에요."
+    return result
+
+
+def late_early_frequent(months: int = 3, min_count: int = 3, asof: date | None = None, limit: int = 100) -> dict:
+    """최근 months개월 동안 지각이 min_count회 이상인 직원 (많은 순). 조퇴는 기록이 없어 지각만 셈. [21]"""
+    asof = _date(asof or date.today())
+    start = _months_ago(asof, months)
+    rows = db.fetch_all(
+        f"SELECT e.emp_id, e.name, d.dept_name, e.grade, count(*) AS n "
+        f"FROM hr.attendance a JOIN hr.employees e ON e.emp_id = a.emp_id {_DEPT} "
+        f"WHERE a.status = '지각' AND a.work_date > %s AND a.work_date <= %s AND {_ACTIVE} "
+        "GROUP BY e.emp_id, e.name, d.dept_name, e.grade", (start, asof))
+    hit = sorted((r for r in rows if r["n"] >= min_count), key=lambda r: (-r["n"], r["emp_id"]))
+    out = [{**_person(r), "지각": r["n"]} for r in hit]
+    by_dept: dict[str, int] = {}
+    for x in out:
+        by_dept[x["부서"]] = by_dept.get(x["부서"], 0) + 1
+    return {**_result({"기간": f"{start + timedelta(days=1)}~{asof}", "지각_이상": min_count}, out[:limit], len(out)),
+            "부서별": by_dept, "주의": "출퇴근 기록에 조퇴 표시가 없어 지각만 셌어요. 교대근무자는 근무표가 없어 일근 기준이에요."}
+
+
+def attendance_missing(month: str | None = None, limit: int = 100) -> dict:
+    """그 달 출퇴근 기록 중 출근이나 퇴근 시각이 비어 있는 직원. month 예: '2026-10'. [22]"""
+    if not month:
+        last = _attendance_last_day() or date.today()
+        month = f"{last.year}-{last.month:02d}"
+    y, m = map(int, month.split("-"))
+    start = date(y, m, 1)
+    end = date(y + (m == 12), m % 12 + 1, 1) - timedelta(days=1)
+    rows = db.fetch_all(
+        f"SELECT e.emp_id, e.name, d.dept_name, e.grade, count(*) AS n "
+        f"FROM hr.attendance a JOIN hr.employees e ON e.emp_id = a.emp_id {_DEPT} "
+        f"WHERE a.work_date >= %s AND a.work_date <= %s AND (a.check_in IS NULL OR a.check_out IS NULL) AND {_ACTIVE} "
+        "GROUP BY e.emp_id, e.name, d.dept_name, e.grade ORDER BY n DESC, e.emp_id", (start, end))
+    out = [{**_person(r), "누락일수": r["n"]} for r in rows]
+    return {**_result({"월": month}, out[:limit], len(out)),
+            "주의": "기록이 있는 날의 출근·퇴근 빈칸만 셌어요. 근무일인데 기록 자체가 없는 날은 근무표가 없어 못 셌어요."}
+
+
+# ───────────── 연차 사용 촉진 (근로기준법 제61조) ─────────────
+def _promotion_stage(asof: date) -> dict:
+    """연차 기간은 1/1~12/31 (취업규칙 제23조⑤). 소멸 6개월 전 10일 안에 1차, 소멸 2개월 전까지 2차 통보."""
+    y = asof.year
+    first_from, first_to, second_to = date(y, 7, 1), date(y, 7, 10), date(y, 10, 31)
+    if asof < first_from:
+        stage = "1차 통보 전"
+    elif asof <= first_to:
+        stage = "1차 통보 기간"
+    elif asof <= second_to:
+        stage = "2차 통보 기간"
+    else:
+        stage = "통보 기한 지남"
+    return {"현재 단계": stage, "연차 소멸일": _d(date(y, 12, 31)),
+            "1차 통보": f"{first_from}~{first_to} (미사용 일수를 알리고 사용 시기를 정해 내도록 서면 촉구)",
+            "2차 통보": f"~{second_to} (직원이 10일 안에 시기를 안 내면 회사가 사용 시기를 정해 서면 통보)"}
+
+
+def leave_promotion_targets(asof: date | None = None, min_days: float = 1, limit: int = 20) -> dict:
+    """연차 사용 촉진 대상(올해 남은 연차가 min_days일 이상인 1년 이상 재직자)과 부서별 촉진 필요 여부. 통보 단계·기한 포함."""
+    asof = _date(asof or date.today())
+    year = asof.year
+    one_year_ago = _months_ago(asof, 12)
+    rows = db.fetch_all(
+        "SELECT e.emp_id, e.name, d.dept_name, e.grade, e.hire_date, lb.remaining_days, lb.asof_date "
+        f"FROM hr.leave_balance lb JOIN hr.employees e ON e.emp_id = lb.emp_id {_DEPT} "
+        f"WHERE lb.year = %s AND {_ACTIVE}", (year,))
+    dept: dict[str, dict] = {}
+    targets, new_hires = [], 0
+    for r in rows:
+        x = dept.setdefault(r["dept_name"], {"부서": r["dept_name"], "인원": 0, "대상자": 0, "잔여합계": 0.0})
+        x["인원"] += 1
+        if _date(r["hire_date"]) > one_year_ago:      # 1년 미만 입사자는 촉진 시기가 달라(제61조②) 따로 셈
+            new_hires += 1
+            continue
+        remaining = float(r["remaining_days"] or 0)
+        if remaining >= min_days:
+            x["대상자"] += 1
+            x["잔여합계"] += remaining
+            targets.append(r)
+    table = []
+    for x in dept.values():
+        table.append({**x, "대상비율": round(x["대상자"] / x["인원"], 3) if x["인원"] else 0.0,
+                      "잔여합계": round(x["잔여합계"], 1), "촉진필요": "예" if x["대상자"] else "아니요"})
+    table.sort(key=lambda x: (-x["대상자"], x["부서"]))
+    targets.sort(key=lambda r: (-float(r["remaining_days"] or 0), r["emp_id"]))
+    data_asof = max((_date(r["asof_date"]) for r in rows if r["asof_date"]), default=None)
+    return {**_result({"기준일": asof, "연도": year, "잔여일수_이상": min_days, "잔여 기준일": data_asof}, table, len(targets)),
+            "명단": [{**_person(r), "잔여일수": _num(r["remaining_days"])} for r in targets[:limit]],
+            "단계": _promotion_stage(asof),
+            "주의": f"1년 미만 입사자 {new_hires}명은 촉진 시기가 달라(근로기준법 제61조②) 대상에서 뺐어요. "
+                    "통보를 실제로 했는지는 DB에 기록이 없어요."}
+
+
 # ───────────── 등록표 · 실행 ─────────────
 # 이름 → 함수. 의도 분류(LLM)가 이 중 하나와 인자를 고르면 run_admin_tool이 실행해요.
 ADMIN_TOOLS = {f.__name__: f for f in (
-    dept_leave_usage, leave_remaining_list, leave_by_dept_period, leave_people_period, pending_requests,
+    dept_leave_usage, leave_remaining_list, leave_promotion_targets, leave_by_dept_period, leave_people_period,
+    pending_requests, weekly_hours_over, late_early_frequent, attendance_missing,
     absence_list, retirement_age_list, retirements_by_dept,
     probation_ending, hires_in_period, hr_events,
     training_incomplete, dept_training_rate,
