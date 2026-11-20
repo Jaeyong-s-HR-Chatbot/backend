@@ -100,10 +100,10 @@ def test_rule_search_from_db():
 
 def test_vector_sql_runs():
     """질문 임베딩 대신 저장된 조문 벡터 하나로 pgvector 검색 SQL이 도는지만 확인"""
-    row = db.fetch_one("SELECT chunk_id, embedding::text AS e FROM rag.chunks WHERE chunk_id = 'r03-0024'")
+    row = db.fetch_one("SELECT chunk_id, embedding::text AS e FROM rag.chunks WHERE chunk_id = 'r03-0024-01'")
     vec = [float(x) for x in row["e"].strip("[]").split(",")]
     hits = retriever.vector_search(vec, 3)
-    assert hits[0]["id"] == "r03-0024" and hits[0]["score"] > 0.99
+    assert hits[0]["id"] == "r03-0024-01" and hits[0]["score"] > 0.99
 
 
 def test_no_evidence_refused():

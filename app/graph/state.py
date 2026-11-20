@@ -2,7 +2,7 @@
 from typing import Literal, TypedDict
 
 Intent = Literal["rule", "lookup", "both", "sensitive", "refuse", "out_of_scope",
-                 "data", "unavailable"]   # data·unavailable은 인사팀(hr_admin) 전용
+                 "data"]   # data는 인사팀(hr_admin) 전용
 
 
 class Chunk(TypedDict, total=False):
