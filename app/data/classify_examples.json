@@ -95,9 +95,9 @@
       "calc": null
     },
     {
-      "id": "sensitive-03-a",
+      "id": "sensitive-04-a",
       "purpose": "label",
-      "question": "직장 내 괴롭힘을 겪고 있어요. 어디에 도움을 요청하죠?",
+      "question": "동료들이 저를 따돌리는 것 같아 너무 힘들어요",
       "intent": "sensitive",
       "tools": [],
       "calc": null
