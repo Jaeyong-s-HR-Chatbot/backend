@@ -365,7 +365,7 @@ def test_json_parse_failure_keeps_actual_output_in_evaluation_stats(tmp_path, mo
     assert stats.raw_json_failures == [("[전화] 문의", raw)]
 
 
-def test_few_shot_examples_are_dev_only_masked_and_pair_disjoint_from_test():
+def test_few_shot_examples_are_dev_only_original_and_pair_disjoint_from_test():
     cases = {
         case["id"]: case
         for case in (
@@ -397,14 +397,7 @@ def test_few_shot_examples_are_dev_only_masked_and_pair_disjoint_from_test():
         source = cases[example["id"]]
         assert source["split"] == "dev"
         assert example["id"].rsplit("-", 1)[0] not in test_pairs
-        masked = nodes.guard(
-            {
-                "employee_id": "E1584",
-                "own_name": "이서준",
-                "question": source["question"],
-            }
-        )["masked_question"]
-        assert example["question"] == masked
+        assert example["question"] == source["question"]   # LLM은 마스킹 안 한 원문을 받으니 예시도 원문
     assert sum(example["calc"] is not None for example in examples) == 4
 
 
