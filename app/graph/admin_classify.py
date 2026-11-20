@@ -1,8 +1,8 @@
 """인사팀(hr_admin) 질문 분류 (규칙). 역할은 토큰에서 오고, 이 분류는 hr_admin일 때만 써요.
 
 의도
-- data        : 집계·명단만 필요 → 집계 도구 → 답변
-- both        : 집계 + 규정 (기준·기한·방법도 물음) → 집계 도구 + 검색 → 답변
+- both        : 집계 도구가 필요함 → 집계 도구 + 규정 검색 → 답변. 규정을 답에 쓸지는 답변 LLM이 근거를 보고 정함
+                (예전 data/both 구분은 없앴어요. 골든셋 채점에서는 data와 both를 같은 정답으로 봐요)
 - rule        : 규정·절차만 → 검색 → 답변 (징계·고충도 여기로. 로그만 [민감 주제 문의])
 - unavailable : DB에 없는 데이터 → 안내
 - refuse      : 주민번호·계좌·주소·연락처 요청 → 거절 (인사팀도 챗봇으로는 못 봄)
@@ -17,9 +17,8 @@ PII_REQUEST = ["주민번호", "주민등록번호", "계좌", "주소", "전화
 # 지금 DB나 도구로 답할 수 없는 데이터 (관리자 질문셋 '불가'). 출퇴근 기록(hr.attendance)은 근태 도구로 답해요.
 UNAVAILABLE = ["유연근무", "초과근무 사전", "근로시간 단축", "통보 이력",
                "사용계획", "개인정보 조회했", "누가 조회", "특수건강진단"]
-# 숫자만으로는 인사팀이 할 일을 모르는 도구 → 질문에 규정 단어가 없어도 근거 규정을 같이 검색 (연장근로 한도, 지각 처리, 촉진 절차)
-#                 값은 규정 검색어에 덧붙일 말 (질문 문장만으로는 근거 조문이 잘 안 잡혀서)
-ALWAYS_BOTH = {
+# 도구별 규정 검색어 보강 (질문 문장만으로는 근거 조문이 잘 안 잡히는 도구: 연장근로 한도, 지각 처리, 촉진 절차)
+SEARCH_HINTS = {
     "weekly_hours_over": "연장근로의 제한 1주 12시간 한도",
     "late_early_frequent": "지각 조퇴 근무시작 소속장 승인",
     "attendance_missing": "근무상황부 근태 관리 퇴근절차",
@@ -173,9 +172,9 @@ def classify_admin(q: str, today: date | None = None) -> dict:
         return {"intent": "unavailable", "sensitive_topic": sensitive_topic}
     tool, params = pick_tool(q, today)
     if tool:
-        intent = "both" if tool in ALWAYS_BOTH or any(w in q for w in RULE_WORDS) else "data"
-        out = {"intent": intent, "admin_tool": tool, "admin_params": params, "sensitive_topic": sensitive_topic}
-        if tool in ALWAYS_BOTH:
-            out["search_hint"] = ALWAYS_BOTH[tool]
+        # 집계 도구를 쓰면 규정 검색도 항상 같이 해요. 규정을 답에 쓸지는 근거를 보는 답변 LLM이 정해요.
+        out = {"intent": "both", "admin_tool": tool, "admin_params": params, "sensitive_topic": sensitive_topic}
+        if tool in SEARCH_HINTS:
+            out["search_hint"] = SEARCH_HINTS[tool]
         return out
     return {"intent": "rule", "sensitive_topic": sensitive_topic}
