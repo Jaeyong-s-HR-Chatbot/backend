@@ -13,7 +13,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel
 from starlette.formparsers import MultiPartException, MultiPartParser
 
-from . import conf_store, roles
+from . import conf_access, conf_store, roles
 from .auth import current_user
 from .masking import pseudonymize
 from .schemas import Me
@@ -87,6 +87,62 @@ class DocumentMeta(BaseModel):
     status: Literal["processing", "ready", "failed"]
 
 
+class ViewText(BaseModel):
+    text: str
+
+
+class ViewRedaction(BaseModel):
+    redacted: Literal[True]
+    level: Literal[1, 2, 3, 4]
+
+
+class ViewBlock(BaseModel):
+    type: Literal["p"] = "p"
+    segments: list[ViewText | ViewRedaction]
+
+
+class ViewSection(BaseModel):
+    heading: str
+    blocks: list[ViewBlock]
+
+
+class DocumentView(BaseModel):
+    doc_id: str
+    title: str
+    confidential: bool
+    doc_no: str
+    owner_dept: str
+    issued_at: str
+    view: Literal["original", "redacted"]
+    redacted_count: int
+    sections: list[ViewSection]
+
+
+SAFE_HEADINGS = {
+    "제목", "본문", "서명 위원", "서명 위원장", "근로자위원", "사용자위원", "출석위원수",
+    "징계대상자 성명", "징계대상자 생년월일", "징계대상자 소속",
+    *(label for form in upload_meta.CONF["forms"].values() for label in form["labels"]),
+}
+
+
+def _sections(doc, segments, mode):
+    sections = {}
+    is_transcript = doc["doc_kind"] == "녹취록"
+    for segment in segments:
+        if is_transcript:
+            heading = "발언" if segment["chunk_type"] == "발언" else "회의 정보"
+        else:
+            article = segment.get("article")
+            heading = article if mode == "full" or article in SAFE_HEADINGS else "기타"
+            heading = heading or "기타"
+        item = dict(segment, level=doc["level"])
+        rendered = conf_access.segment_view(mode, item)
+        if heading not in sections:
+            sections[heading] = ViewSection(heading=heading, blocks=[])
+        sections[heading].blocks.append(ViewBlock(segments=rendered))
+    return list(sections.values())
+
+
 def _iso(value):
     return value.isoformat() if value is not None else ""
 
@@ -145,6 +201,46 @@ def list_documents(user: Me = Depends(current_user)):
         return [_document(row) for row in conf_store.list_documents(access)]
     except (psycopg.Error, OSError, RuntimeError) as exc:
         raise _store_error(exc) from None
+
+
+@router.get("/documents/{doc_id}", response_model=DocumentView)
+def view_document(doc_id: str, user: Me = Depends(current_user)):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", doc_id):
+        raise HTTPException(404, "문서를 찾을 수 없습니다")
+    access_roles = _access(user)
+    try:
+        with conf_store.read_document(doc_id) as (doc, read_segments):
+            if doc is None:
+                raise HTTPException(404, "문서를 찾을 수 없습니다")
+            mode = conf_access.access(user.employee_id, access_roles, doc)
+            if mode == "deny":
+                raise HTTPException(403, "열람 권한이 없어요")
+            if doc["status"] != "ready":
+                raise HTTPException(409, "문서가 준비되지 않았습니다")
+            segments = read_segments()
+            if not segments:
+                raise ValueError("문서 조각이 없습니다")
+            sections = _sections(doc, segments, mode)
+            count = sum(isinstance(part, ViewRedaction)
+                        for section in sections for block in section.blocks for part in block.segments)
+            response = DocumentView(
+                doc_id=doc["doc_id"], title=doc["title"], confidential=doc["confidential"],
+                doc_no=doc["doc_no"] or "", owner_dept=doc["owner_dept"] or "",
+                issued_at=_iso(doc["issued_at"]), view="redacted" if count else "original",
+                redacted_count=count, sections=sections,
+            )
+    except (psycopg.Error, OSError, RuntimeError, ValueError, KeyError, TypeError) as exc:
+        log.error("action=view_error actor=%s doc_id=%s error=%s",
+                  pseudonymize(user.employee_id), doc_id, type(exc).__name__)
+        raise HTTPException(503, "문서를 안전하게 처리할 수 없습니다") from None
+    if mode == "full" and doc["level"] == "L4":
+        # TODO: L4 상세 열람 사유 입력.
+        try:
+            conf_store.log_view(pseudonymize(user.employee_id), doc_id, mode)
+        except (psycopg.Error, OSError, RuntimeError) as exc:
+            log.warning("action=view_log_failed actor=%s doc_id=%s error=%s",
+                        pseudonymize(user.employee_id), doc_id, type(exc).__name__)
+    return response
 
 
 @router.post("/documents", response_model=DocumentMeta)

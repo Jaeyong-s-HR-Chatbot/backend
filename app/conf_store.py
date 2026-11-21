@@ -76,6 +76,37 @@ def list_documents(roles):
         ).fetchall()
 
 
+@contextmanager
+def read_document(doc_id):
+    with connection() as conn:
+        with conn.transaction():
+            conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            doc = conn.execute(
+                """SELECT doc_id, title, confidential, doc_no, owner_dept, issued_at, status,
+                    doc_kind, category, level, allowed_roles, subject_emp_id, participants
+                    FROM conf.documents WHERE doc_id = %s""",
+                (doc_id,),
+            ).fetchone()
+
+            def segments():
+                return conn.execute(
+                    """SELECT seq, chunk_type, article, speaker_label, text, level,
+                        entities, og, pos, qi, sen
+                        FROM conf.segments WHERE doc_id = %s ORDER BY seq""",
+                    (doc_id,),
+                ).fetchall()
+
+            yield doc, segments
+
+
+def log_view(user_pseudo_id, doc_id, mode):
+    with connection() as conn:
+        conn.execute(
+            "INSERT INTO app.conf_view_log (user_pseudo_id, doc_id, mode) VALUES (%s, %s, %s)",
+            (user_pseudo_id, doc_id, mode),
+        )
+
+
 def mark_failed(doc_id):
     with connection() as conn:
         with conn.transaction():
