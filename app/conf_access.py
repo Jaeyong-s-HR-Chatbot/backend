@@ -2,6 +2,7 @@
 from typing import Literal
 
 from confidential.upload_meta import CATEGORY_ROLES
+from confidential.mask_rules import is_subject_department
 
 AccessMode = Literal["full", "subject", "masked", "deny"]
 PARTICIPANT_ROLES = {"COMMITTEE_CHAIR", "COMMITTEE", "COUNCIL"}
@@ -119,7 +120,8 @@ def segment_view(mode: AccessMode, segment: dict) -> list[dict]:
     level = max(3, int(segment["level"][1]))
     if segment.get("sen"):
         return _redacted(level)
-    # TODO(3-2): 징계대상자 소속 칸의 항상 가림 규칙을 conf_mask와 공유하고 masked 모드에 적용.
+    if is_subject_department(segment):
+        return _redacted(level)
     result = []
     if speaker:
         result.extend(_masked(speaker, _spans(segment, "speaker_label", speaker), level))
