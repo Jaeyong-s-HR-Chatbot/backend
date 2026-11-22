@@ -7,6 +7,7 @@ Intent = Literal["rule", "lookup", "both", "sensitive", "refuse", "out_of_scope"
 
 class Chunk(TypedDict, total=False):
     id: str
+    doc_id: str
     citation: str
     revised: str
     text: str
@@ -28,6 +29,10 @@ class HRState(TypedDict, total=False):
     intent: Intent
     conf_doc: str              # 보안문서가 필요한 질문: labor_minutes(노사회의록) / discipline_minutes(징계회의록)
     conf_doc_role: str         # 그 문서를 볼 수 있는 역할 (HR_LABOR / HR_DISCIPLINE)
+    conf_active: bool
+    conf_hidden: list[tuple[str, str]]
+    documents: list[dict]
+    llm_question: str
     refuse_reason: str         # 인사팀 거절 이유: chat_log (특정인 대화 기록·민감 상담자 신원)
     sensitive_topic: bool     # 인사팀이 민감 주제를 물음 → 검색은 하되 로그는 [민감 주제 문의]로
     admin_tool: str            # 인사팀 집계 도구 이름 (app/admin_tools.py)

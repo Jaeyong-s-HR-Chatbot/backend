@@ -67,4 +67,5 @@ def chat(body: ChatRequest, user: Me = Depends(current_user)):
         kind=kind,
         thread_id=body.thread_id or uuid.uuid4().hex,
         pii_notice=None,   # 질문은 마스킹하지 않아요 (로그에 저장할 때만 가림). 화면 호환용으로 칸만 남김
+        documents=state.get("documents", []),
     )

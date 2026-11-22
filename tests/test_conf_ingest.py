@@ -47,7 +47,7 @@ class SQLiteConnection:
                 return json.dumps(value, ensure_ascii=False)
             return value
 
-        return self.db.execute(sql.replace("%s", "?"), tuple(adapt(p) for p in params))
+        return self.db.execute(sql.replace("%s", "?").replace("::vector", ""), tuple(adapt(p) for p in params))
 
 
 @pytest.fixture
@@ -72,6 +72,7 @@ def test_speaker_codes_follow_first_appearance(monkeypatch):
 
 
 def test_ingest_masks_sensitive_chunks_and_replaces_previous_rows(tmp_path, monkeypatch, doc):
+    monkeypatch.setattr(ingest.embedding, "encode", lambda _texts: None)
     pdf = tmp_path / "test.pdf"
     pdf.touch()
     chunks = [

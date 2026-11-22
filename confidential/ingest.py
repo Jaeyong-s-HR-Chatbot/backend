@@ -9,7 +9,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from app import config
-from . import conf_build, conf_mask, ner_model
+from . import conf_build, conf_mask, embedding, ner_model
 
 HERE = Path(__file__).parent
 
@@ -75,12 +75,12 @@ def upsert_document(conn, meta, status, chunk_count):
     )
 
 
-def write_document(conn, meta, pairs):
+def write_document(conn, meta, pairs, embeddings=None):
     with conn.transaction():
         upsert_document(conn, meta, "processing", len(pairs))
         conn.execute("DELETE FROM conf.chunks_masked WHERE doc_id = %s", (meta["id"],))
         conn.execute("DELETE FROM conf.segments WHERE doc_id = %s", (meta["id"],))
-        for chunk, masked in pairs:
+        for index, (chunk, masked) in enumerate(pairs):
             seq = int(chunk["chunk_id"].rsplit("-", 1)[1])
             conn.execute(
                 """INSERT INTO conf.segments
@@ -96,10 +96,11 @@ def write_document(conn, meta, pairs):
                 """INSERT INTO conf.chunks_masked
                 (chunk_id, doc_id, seq, chunk_type, article, speaker_masked, masked_text,
                  level, sen, allowed_roles, embedding, tsv)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, to_tsvector('simple', %s))""",
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, to_tsvector('simple', %s))""",
                 (chunk["chunk_id"], meta["id"], seq, chunk["chunk_type"], chunk["article"],
                  masked.get("speaker_masked"), masked["masked"], meta["level"], masked["sen"],
-                 meta.get("allowed_roles", []), masked["masked"]),
+                 meta.get("allowed_roles", []),
+                 embedding.literal(embeddings[index]) if embeddings is not None else None, masked["masked"]),
             )
         conn.execute("UPDATE conf.documents SET status = 'ready' WHERE doc_id = %s", (meta["id"],))
 
@@ -123,13 +124,15 @@ def ingest_document(pdf_path, meta, *, model=None, counts=None, conn=None, dry_r
         with path.open("w", encoding="utf-8") as f:
             for chunk, masked in pairs:
                 f.write(json.dumps({"segment": chunk, "masked": masked}, ensure_ascii=False) + "\n")
-    elif conn is not None:
-        write_document(conn, doc, pairs)
     else:
-        if not config.HRDB_URL:
-            raise RuntimeError("DB 적재에 HRDB_URL이 필요합니다")
-        with psycopg.connect(config.HRDB_URL, connect_timeout=5) as connection:
-            write_document(connection, doc, pairs)
+        embeddings = embedding.encode([masked["masked"] for _, masked in pairs])
+        if conn is not None:
+            write_document(conn, doc, pairs, embeddings)
+        else:
+            if not config.HRDB_URL:
+                raise RuntimeError("DB 적재에 HRDB_URL이 필요합니다")
+            with psycopg.connect(config.HRDB_URL, connect_timeout=5) as connection:
+                write_document(connection, doc, pairs, embeddings)
     return {
         "doc_id": doc["id"],
         "chunks": len(pairs),

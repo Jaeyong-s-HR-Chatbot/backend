@@ -23,11 +23,11 @@ _WEAK = r"논의|의결|합의(?:된|한|했|\s*내용|\s*사항)|결정(?:된|�
 _RULE_ASK = re.compile(r"얼마|몇\s*(?:년|일|달|개월|번|회)|며칠|언제까지|어떻게|해야|기한|규정|절차|기준|가능|수\s*있|되나|돼\?")
 
 _LABOR_TOPIC = re.compile(r"노사|노조|노동조합|단체\s*교섭|임금\s*교섭|근로자\s*위원")
-_LABOR_STRONG = re.compile(_STRONG + r"|(?:노조|노동조합|근로자\s*위원)\s*(?:이|가|는|측)?\s*(?:요구|주장|제안)(?:한|했|하는)|쟁점")
+_LABOR_STRONG = re.compile(_STRONG + r"|(?:노사협의회|근로자\s*위원).{0,30}(?:뭐라고|말했|말한|발언)|(?:노조|노동조합|근로자\s*위원)\s*(?:이|가|는|측)?\s*(?:요구|주장|제안)(?:한|했|하는)|쟁점")
 _LABOR_WEAK = re.compile(_WEAK + r"|요구\s*사항")
 _DISCIPLINE_TOPIC = re.compile(r"징계")
 # 누가·명단은 특정인을 묻는 말이라 강한 신호 (징계회의록의 징계 대상자)
-_DISCIPLINE_STRONG = re.compile(_STRONG + r"|누가|누구|명단")
+_DISCIPLINE_STRONG = re.compile(_STRONG + r"|누가|누구|명단|(?:내|나의|제|저의)\s*징계\s*결과")
 _DISCIPLINE_WEAK = re.compile(_WEAK + r"|대상자|받은\s*(?:사람|직원)|징계\s*받은|징계받은")
 
 
