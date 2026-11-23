@@ -175,11 +175,11 @@ def run(split: str = "all", items=None, as_of: date | None = None, use_llm: bool
 
 def policy_table(rows: list[dict], as_of: date) -> list[dict]:
     """LLM이 의도·도구를 어디까지 고를지 세 방식 비교 (평가 전용: 모든 문항에 의도·도구 LLM을 한 번씩 불러요).
-    - 규칙만 / 지금(규칙이 rule·out_of_scope이고 도구가 없을 때만 LLM) / 전부 LLM(규칙이 refuse면 규칙)"""
+    - 규칙만 / 예전(규칙이 rule·out_of_scope이고 도구가 없을 때만 LLM) / 지금(전부 LLM, 규칙이 refuse면 규칙)"""
     from app.graph import admin_intent_llm
     from app.graph.admin_classify import LLM_DECIDES, classify_admin
 
-    policies = {"규칙만": [], "지금 (규칙이 rule·out_of_scope면 LLM)": [], "전부 LLM": []}
+    policies = {"규칙만": [], "예전 (규칙이 rule·out_of_scope면 LLM)": [], "지금 (전부 LLM)": []}
     for r in rows:
         if r["pred_intent"] == "no_question":
             for v in policies.values():
@@ -190,9 +190,9 @@ def policy_table(rows: list[dict], as_of: date) -> list[dict]:
         llm = admin_intent_llm.classify(r["question"])
         llm_pick = (same_intent(llm["intent"]), llm["admin_tool"]) if llm else rule_pick
         policies["규칙만"].append(rule_pick)
-        policies["지금 (규칙이 rule·out_of_scope면 LLM)"].append(
+        policies["예전 (규칙이 rule·out_of_scope면 LLM)"].append(
             llm_pick if rule["intent"] in LLM_DECIDES and not rule.get("admin_tool") else rule_pick)
-        policies["전부 LLM"].append(rule_pick if rule["intent"] == "refuse" else llm_pick)
+        policies["지금 (전부 LLM)"].append(rule_pick if rule["intent"] == "refuse" else llm_pick)
     out = []
     for name, picks in policies.items():
         intent_ok = [p[0] == r["gold_intent"] for p, r in zip(picks, rows)]

@@ -360,16 +360,20 @@ def classify_admin(q: str, today: date | None = None) -> dict:
     return {"intent": "rule", "sensitive_topic": sensitive_topic}
 
 
-# 규칙이 이 의도로 냈고 집계 도구도 못 찾았으면 LLM이 의도·도구를 골라요 (임직원과 같은 방식).
-# 규칙이 자신 없을 때 가는 곳이라서예요: 인사 단어가 없으면 out_of_scope, 도구 단어가 안 맞으면 rule.
+# 인사팀은 의도·도구를 LLM이 골라요 (규칙이 대화 기록 거절로 정한 것만 규칙 그대로).
+# Colab 27B 처음 보는 질문: 규칙만 77.5% → 규칙이 rule·out_of_scope일 때만 LLM 92.1% → 전부 LLM 100%, 새로 틀림 0
+# (기존 골든셋은 세 방식 모두 99~100%). 임직원은 전부 LLM이 새로 틀리는 게 있어 규칙이 rule·out_of_scope일 때만 써요.
+# LLM_DECIDES는 평가 비교표의 예전 방식용이에요.
 LLM_DECIDES = {"rule", "out_of_scope"}
 
 
 def _from_llm(llm: dict | None, rule: dict) -> dict:
-    """LLM이 고른 의도·도구로 바꿔요. LLM이 실패하면 규칙 결과 그대로."""
+    """LLM이 고른 의도·도구로 바꿔요. LLM이 실패하면 규칙 결과 그대로, 규칙과 같은 도구면 규칙 인자를 살려요."""
     if llm is None:
         return rule
     topic = rule.get("sensitive_topic", False)
+    if llm["admin_tool"] and llm["admin_tool"] == rule.get("admin_tool"):
+        return rule
     if llm["admin_tool"]:
         return _both(llm["admin_tool"], {}, topic)     # 기간·기준값은 다음 단계(admin_params_llm)에서
     if llm["intent"] == "refuse":
@@ -380,8 +384,8 @@ def _from_llm(llm: dict | None, rule: dict) -> dict:
 def classify_admin_state(s: dict, today: date | None = None, use_llm: bool | None = None) -> dict:
     """인사팀 분류 진입점 (nodes.classify가 hr_admin일 때 불러요).
 
-    규칙이 먼저 분류하고, 규칙이 rule·out_of_scope로 냈으면(집계 도구를 못 찾았으면) 분류 보조 LLM이 의도·도구를 골라요.
-    도구가 정해지면 그 도구의 기간·기준값을 LLM에 다시 물어, 규칙이 비워 둔 인자만 질문에 근거가 있는 값으로 채워요
+    규칙이 먼저 분류하고(민감 주제 표시·대화 기록 거절), 분류 보조 LLM이 의도·도구를 골라요. 규칙이 대화 기록 거절로
+    정했으면 LLM을 안 불러요. 도구가 정해지면 그 도구의 기간·기준값을 LLM에 다시 물어, 규칙이 비워 둔 인자만 질문에 근거가 있는 값으로 채워요
     (실패하면 규칙 결과·규칙 값). today·use_llm은 평가에서만 넘겨요."""
     from . import admin_intent_llm, admin_params_llm, llm_classify   # 순환 import 방지
     from .nodes import question_text
@@ -391,7 +395,7 @@ def classify_admin_state(s: dict, today: date | None = None, use_llm: bool | Non
     rule = classify_admin(question, today)
     result = rule
     use_llm = llm_classify.enabled() if use_llm is None else use_llm
-    if use_llm and rule["intent"] in LLM_DECIDES and not rule.get("admin_tool"):
+    if use_llm and rule["intent"] != "refuse":
         result = _from_llm(admin_intent_llm.classify(question), rule)
     if use_llm and result.get("admin_tool"):
         params = admin_params_llm.extract(question, result["admin_tool"], today)
