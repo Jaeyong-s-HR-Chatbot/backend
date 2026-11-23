@@ -18,6 +18,7 @@ uvicorn app.main:app --port 8000
 - 코드를 고친 뒤에는 서버를 껐다 켜야 반영돼요.
 - 테스트: `python -m pytest -q`
   - DB가 연결된 환경에서는 `tests/test_rag_mode.py` 1건이 실패해요. 테스트 기대값 문제이고 동작은 정상이에요.
+- 최종 의도 분류 구조·기준·측정: [의도 분류](./docs/intent_classification.md)
 - 마스킹 측정: `python scripts/eval_masking.py` (결과는 [측정 결과](./docs/masking_eval.md))
 
 DB와 로컬 LLM(Ollama)까지 연결해 실행하는 방법은 `RUN_LOCAL.md`를 보세요.

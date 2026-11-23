@@ -208,9 +208,9 @@ def test_few_shot_examples_are_dev_only_original_and_pair_disjoint_from_test():
     calc_examples = [example for example in examples if example["purpose"] == "calculation"]
 
     assert Counter(example["intent"] for example in label_examples) == {
-        "rule": 2,
+        "rule": 1,     # rule-11-a "입사 3년차인데 연차 일수 계산해 줘"는 2026-11-23 기준 통일로 both
         "lookup": 2,
-        "both": 2,
+        "both": 3,
         "out_of_scope": 2,
         "sensitive": 2,
         "refuse": 2,
