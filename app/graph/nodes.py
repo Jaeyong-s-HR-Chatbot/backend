@@ -175,6 +175,19 @@ def has_question_content(question: str) -> bool:
     return not _NO_QUESTION_CONTENT.fullmatch(_intent_question(question))
 
 
+# 로그인과 다른 사번으로 자기소개만 하는 문장 ("제 사번은 E1327입니다.", "E1682 / 기획팀 / 정유진").
+# 사번이 토큰과 달라 [사번](타인)으로 가려지지만 요청이 없으니 거절 대신 질문 없음으로 봐요.
+_SELF_DECLARED_OTHER_ID = re.compile(r"((?:제|내|저의|나의)\s*사번\s*(?:은|는|이|가)?\s*)\[사번\]")
+_ID_CARD = re.compile(r"^\s*\[사번\](?:\s*[/,|·]\s*[^\s/,|·?]+(?:\s[^\s/,|·?]+)?){1,3}\s*[.!]*\s*$")
+
+
+def _only_self_introduction(q: str) -> bool:
+    if _ID_CARD.match(q):
+        rest = re.sub(r"\[[^\]]+\]", "", q)      # 태그 안의 '사번' 글자는 빼고 봐요
+        return not any(w in rest for w in _HR_WORDS)
+    return not has_question_content(_SELF_DECLARED_OTHER_ID.sub(r"\1[본인사번]", q))
+
+
 def _classify_signals(s: HRState) -> tuple[bool, bool, bool, bool]:
     q = s["masked_question"]
     intent_q = _intent_question(q)
@@ -200,6 +213,8 @@ def _classify_rule(s: HRState) -> HRState:
     sensitive = _sensitive_kind(q)
     if sensitive:
         intent = sensitive         # "sensitive" 또는 규정만 묻는 말("rule")
+    elif other_id and _only_self_introduction(q):
+        intent = "no_question"     # 다른 사번으로 자기소개만 (요청 없음)
     elif other_id or any(w in q for w in _OTHER_PERSON) or _OTHER_NAME.search(q):
         intent = "refuse"          # 타인 조회·권한 밖
     elif _OTHER_ORG.search(intent_q) or (

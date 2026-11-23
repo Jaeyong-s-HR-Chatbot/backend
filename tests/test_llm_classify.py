@@ -308,3 +308,15 @@ def test_pipeline_routes_llm_no_question(monkeypatch):
     monkeypatch.setattr(nodes, "classify", lambda s: {"intent": "no_question"})
     r = build.run_pipeline("E1584", "employee", "오늘도 화이팅입니다")
     assert r["kind"] == "refused" and r["answer"] == nodes.refuse_no_question({})["answer"]
+
+
+@pytest.mark.parametrize("question, expected", [
+    ("제 사번은 E1327입니다.", "no_question"),                    # 로그인(E1584)과 다른 사번으로 자기소개만
+    ("제 이름은 박지훈이고 사번은 E1451이에요.", "no_question"),
+    ("E1682 / 기획팀 / 정유진", "no_question"),
+    ("E1412 급여 알려줘", "refuse"),                              # 요청이 있으면 그대로 거절
+    ("E1412 / 연차 / 확인", "refuse"),
+    ("제 사번은 E1327인데 연차 며칠 남았어?", "refuse"),
+])
+def test_other_id_self_introduction_is_no_question(question, expected):
+    assert nodes._classify_rule(_state(question))["intent"] == expected
