@@ -25,7 +25,7 @@ CASES_PATH = ROOT / "eval" / "conf_doc" / "conf_doc_cases.jsonl"
 
 def run(use_llm: bool) -> dict:
     cases = [json.loads(line) for line in CASES_PATH.read_text(encoding="utf-8").splitlines() if line.strip()]
-    config.CLASSIFY_LLM = use_llm
+    original, config.CLASSIFY_LLM = config.CLASSIFY_LLM, use_llm
     rows = []
     for case in cases:
         started = perf_counter()
@@ -34,6 +34,7 @@ def run(use_llm: bool) -> dict:
         gold = case["doc"]
         ok = pred == gold or (case.get("either") and pred != "none")
         rows.append({**case, "pred": pred, "ok": bool(ok), "ms": round(ms, 1)})
+    config.CLASSIFY_LLM = original
     pos = [r for r in rows if r["doc"] != "none"]
     neg = [r for r in rows if r["doc"] == "none"]
     return {

@@ -10,6 +10,7 @@ import csv
 import json
 import re
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from time import perf_counter
 
@@ -358,29 +359,64 @@ def _scoring_cases(split, exclude_examples=False):
 
 
 def _run(cases, use_llm=False):
-    if use_llm:
-        if config.USE_FAKE_LLM:
-            raise SystemExit("--llm은 .env에 LLM_BASE_URL이 있어야 해요")
-        config.CLASSIFY_LLM = True
-        with llm_classify.evaluation_cache(CACHE_PATH) as stats:
-            predictions, metrics = _run(cases)
-        config.CLASSIFY_LLM = False
-        metrics["llm"] = {"calls": stats.calls, "cache_hits": stats.cache_hits, "errors": len(stats.errors),
-                          "json_failures": stats.json_failures, "validation_failures": stats.validation_failures}
-        return predictions, metrics
-    config.CLASSIFY_LLM = False
+    """use_llm이면 분류 보조 LLM을 켜고(응답은 eval/intent/cache에 저장), 아니면 규칙만으로 채점해요."""
+    if use_llm and config.USE_FAKE_LLM:
+        raise SystemExit("--llm은 .env에 LLM_BASE_URL이 있어야 해요")
+    original = config.CLASSIFY_LLM
+    config.CLASSIFY_LLM = use_llm
     config.CALC_TOOLS = True
     calc_rules.load_rules.cache_clear()
     predictions = []
     elapsed_ms = []
     try:
-        for case in cases:
-            started = perf_counter()
-            predictions.append(_predict(case))
-            elapsed_ms.append((perf_counter() - started) * 1000)
+        with (llm_classify.evaluation_cache(CACHE_PATH) if use_llm else nullcontext(None)) as stats:
+            for case in cases:
+                started = perf_counter()
+                predictions.append(_predict(case))
+                elapsed_ms.append((perf_counter() - started) * 1000)
     finally:
         calc_rules.load_rules.cache_clear()
-    return predictions, _metrics(cases, predictions, elapsed_ms)
+        config.CLASSIFY_LLM = original
+    metrics = _metrics(cases, predictions, elapsed_ms)
+    if use_llm:
+        metrics["llm"] = {"calls": stats.calls, "cache_hits": stats.cache_hits, "errors": len(stats.errors),
+                          "json_failures": stats.json_failures, "validation_failures": stats.validation_failures}
+    return predictions, metrics
+
+
+def compare(split="dev"):
+    """규칙 vs 규칙+분류 보조 LLM을 같은 문장(few-shot 예시 쌍 제외)으로 채점해요. Colab 노트북도 이걸 불러요.
+
+    반환: {"report": 마크다운, "cases", "rule": (예측, 지표), "llm": (예측, 지표), "changed": 바뀐 문장 목록}"""
+    cases = _scoring_cases(split, exclude_examples=True)
+    rule_pred, metrics = _run(cases)
+    llm_pred, llm_metrics = _run(cases, use_llm=True)
+    pct = lambda v: "N/A" if v is None else f"{v * 100:.1f}%"
+    rows = [("전체 정확도", "accuracy"), ("조회 도구", "tool_accuracy"), ("계산 종류", "calc_type_accuracy"),
+            ("계산 값", "calc_value_accuracy")]
+    table = [f"# 규칙 vs 규칙+분류 보조 LLM ({split})", "", f"- 문장 수: {len(cases)} (few-shot 예시 쌍 제외)",
+             f"- LLM: {llm_metrics['llm']}", "", "| 지표 | 규칙 | 규칙+LLM |", "| --- | ---: | ---: |"]
+    table += [f"| {name} | {pct(metrics[key])} | {pct(llm_metrics[key])} |" for name, key in rows]
+    for label in ("sensitive", "refuse"):
+        for kind, word in (("recall", "재현율"), ("precision", "정밀도")):
+            table.append(f"| {label} {word} | {pct(metrics['per_label'][label][kind])} | "
+                         f"{pct(llm_metrics['per_label'][label][kind])} |")
+    table.append(f"| 문장당 평균 ms | {metrics['average_ms']:.1f} | {llm_metrics['average_ms']:.1f} |")
+    changed = []
+    for case, r, l in zip(cases, rule_pred, llm_pred):
+        if r[0] != l[0] or r[2] != l[2]:
+            result = ("고침" if l[0] == case["intent"] and r[0] != case["intent"] else
+                      "새로 틀림" if r[0] == case["intent"] and l[0] != case["intent"] else "그대로")
+            changed.append({"id": case["id"], "question": case["question"], "정답": case["intent"],
+                            "규칙": r[0], "규칙+LLM": l[0], "결과": result,
+                            "정답 계산": case["calc"], "LLM 계산": l[2]})
+    table += ["", "## 규칙+LLM에서 의도·계산이 바뀐 문장", "", "| id | 문장 | 정답 | 규칙 | 규칙+LLM | 의도 결과 |",
+              "| --- | --- | --- | --- | --- | --- |"]
+    table += [f"| {c['id']} | {c['question']} | {c['정답']} | {c['규칙']} | {c['규칙+LLM']} | {c['결과']} |" for c in changed]
+    summary = "\n".join(table) + "\n"
+    detail = _markdown(split + " · 규칙+LLM", cases, llm_metrics)
+    return {"report": summary + "\n" + detail, "summary": summary, "detail": detail, "cases": cases,
+            "rule": (rule_pred, metrics), "llm": (llm_pred, llm_metrics), "changed": changed}
 
 
 def main():
@@ -395,22 +431,12 @@ def main():
         print("경고: test 는 최종 비교 때 한 번만 재세요.", file=sys.stderr)
     if args.apply_review:
         _apply_review()
-    cases = _scoring_cases(args.split, exclude_examples=args.llm)
-    _, metrics = _run(cases)
-    report = _markdown(args.split, cases, metrics)
     if args.llm:
-        _, llm_metrics = _run(cases, use_llm=True)
-        pct = lambda v: "N/A" if v is None else f"{v * 100:.1f}%"
-        rows = [("전체 정확도", "accuracy"), ("조회 도구", "tool_accuracy"), ("계산 종류", "calc_type_accuracy"),
-                ("계산 값", "calc_value_accuracy")]
-        table = ["# 규칙 vs 규칙+분류 보조 LLM", "", f"- 문장 수: {len(cases)} (few-shot 예시 쌍 제외)",
-                 f"- LLM: {llm_metrics['llm']}", "", "| 지표 | 규칙 | 규칙+LLM |", "| --- | ---: | ---: |"]
-        table += [f"| {name} | {pct(metrics[key])} | {pct(llm_metrics[key])} |" for name, key in rows]
-        for label in ("sensitive", "refuse"):
-            table.append(f"| {label} 재현율 | {pct(metrics['per_label'][label]['recall'])} | "
-                         f"{pct(llm_metrics['per_label'][label]['recall'])} |")
-        table.append(f"| 문장당 평균 ms | {metrics['average_ms']:.1f} | {llm_metrics['average_ms']:.1f} |")
-        report = "\n".join(table) + "\n\n" + _markdown(args.split + " · 규칙+LLM", cases, llm_metrics)
+        report = compare(args.split)["report"]
+    else:
+        cases = _scoring_cases(args.split)
+        _, metrics = _run(cases)
+        report = _markdown(args.split, cases, metrics)
     print(report, end="")
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
