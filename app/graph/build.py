@@ -43,7 +43,7 @@ def run_pipeline(employee_id: str, role: str, question: str, own_name: str = "")
         s |= conf_chat.answer(s)
     elif s["intent"] == "refuse":
         s |= n.refuse(s)
-    elif not n.has_question_content(s["masked_question"]):
+    elif s["intent"] == "no_question" or not n.has_question_content(s["masked_question"]):
         s |= n.refuse_no_question(s)
     elif s["intent"] == "out_of_scope":
         s |= n.out_of_scope(s)

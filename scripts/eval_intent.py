@@ -348,9 +348,32 @@ def _markdown(split, cases, metrics):
     return "\n".join(lines) + "\n"
 
 
-def _scoring_cases(split, exclude_examples=False):
-    cases = _read_cases()
-    cases = cases if split == "all" else [case for case in cases if case["split"] == split]
+def load_extra_cases(path, exclude=()):
+    """다른 질문 파일(처음 보는 질문 등). 한 줄에 {"id", "question", "intent", "tools", "calc"} 하나, ``` 줄은 건너뜀.
+    exclude: 뺄 id (기존 평가셋과 거의 같은 문장 등)"""
+    cases = []
+    for n, line in enumerate(Path(path).read_text(encoding="utf-8-sig").splitlines(), 1):
+        s = line.strip()
+        if not s or s.startswith("```"):
+            continue
+        case = json.loads(s)
+        if not {"id", "question", "intent", "tools", "calc"} <= set(case) or case["intent"] not in LABELS:
+            raise ValueError(f"{path}:{n}: id·question·intent·tools·calc가 필요하고 intent는 {LABELS} 중 하나")
+        calc = case["calc"]
+        if isinstance(calc, dict) and "type" not in calc and len(calc) == 1:   # {"overtime": {...}} 모양도 받아요
+            kind, slots = next(iter(calc.items()))
+            case["calc"] = {"type": kind, "slots": slots}
+        if case["id"] not in exclude:
+            cases.append({**case, "split": case.get("split", "extra")})
+    return cases
+
+
+def _scoring_cases(split, exclude_examples=False, cases_path=None, exclude=()):
+    if cases_path:                                    # 다른 질문 파일은 split 구분 없이 전부
+        cases = load_extra_cases(cases_path, exclude)
+    else:
+        cases = _read_cases()
+        cases = cases if split == "all" else [case for case in cases if case["split"] == split]
     if not exclude_examples:
         return cases
     examples = json.loads(EXAMPLES_PATH.read_text(encoding="utf-8")).get("examples", [])
@@ -368,6 +391,15 @@ def _run(cases, use_llm=False):
     calc_rules.load_rules.cache_clear()
     predictions = []
     elapsed_ms = []
+    raw = {}                                   # 질문 → LLM이 고른 의도 (지금 방식은 sensitive·refuse만 쓰고 나머지는 버림)
+    original_classify = llm_classify.classify
+
+    def recording(question, today):
+        result = original_classify(question, today)
+        raw[question] = result["intent"] if result else None
+        return result
+
+    llm_classify.classify = recording
     try:
         with (llm_classify.evaluation_cache(CACHE_PATH) if use_llm else nullcontext(None)) as stats:
             for case in cases:
@@ -375,20 +407,50 @@ def _run(cases, use_llm=False):
                 predictions.append(_predict(case))
                 elapsed_ms.append((perf_counter() - started) * 1000)
     finally:
+        llm_classify.classify = original_classify
         calc_rules.load_rules.cache_clear()
         config.CLASSIFY_LLM = original
     metrics = _metrics(cases, predictions, elapsed_ms)
     if use_llm:
         metrics["llm"] = {"calls": stats.calls, "cache_hits": stats.cache_hits, "errors": len(stats.errors),
                           "json_failures": stats.json_failures, "validation_failures": stats.validation_failures}
+        metrics["llm_raw"] = [raw.get(case["question"]) for case in cases]
     return predictions, metrics
 
 
-def compare(split="dev"):
+# LLM 의도를 어디까지 쓸지 (같은 LLM 응답으로 비교, 호출은 늘지 않아요)
+POLICIES = {
+    "예전 (sensitive·refuse만)": lambda rule, llm: llm if llm in {"sensitive", "refuse"} else rule,
+    "지금 (규칙이 rule·out_of_scope면 LLM)": lambda rule, llm: (llm if llm and (llm in {"sensitive", "refuse"}
+                                                            or rule in {"rule", "out_of_scope"}) else rule),
+    "전부 LLM (hybrid)": lambda rule, llm: llm or rule,
+}
+
+
+def policy_table(cases, rule_pred, llm_metrics):
+    """LLM이 고른 의도를 쓰는 범위별 정확도. LLM을 안 부른 문장(규칙이 sensitive·refuse·질문 없음)은 규칙 결과 그대로."""
+    raw = llm_metrics.get("llm_raw") or [None] * len(cases)
+    out = []
+    for name, pick in POLICIES.items():
+        pred = [pick(r[0], l) for r, l in zip(rule_pred, raw)]
+        ok = [p == c["intent"] for p, c in zip(pred, cases)]
+        by = {}
+        for label in LABELS:
+            idx = [i for i, c in enumerate(cases) if c["intent"] == label]
+            hit = sum(ok[i] for i in idx)
+            fp = sum(1 for i, p in enumerate(pred) if p == label and cases[i]["intent"] != label)
+            by[label] = (hit, len(idx), fp)
+        fixed = sum(1 for p, r, c in zip(pred, rule_pred, cases) if p == c["intent"] != r[0])
+        broke = sum(1 for p, r, c in zip(pred, rule_pred, cases) if r[0] == c["intent"] != p)
+        out.append({"방식": name, "정확도": sum(ok) / len(cases), "고침": fixed, "새로 틀림": broke, "라벨별": by})
+    return out
+
+
+def compare(split="dev", cases_path=None, exclude=()):
     """규칙 vs 규칙+분류 보조 LLM을 같은 문장(few-shot 예시 쌍 제외)으로 채점해요. Colab 노트북도 이걸 불러요.
 
     반환: {"report": 마크다운, "cases", "rule": (예측, 지표), "llm": (예측, 지표), "changed": 바뀐 문장 목록}"""
-    cases = _scoring_cases(split, exclude_examples=True)
+    cases = _scoring_cases(split, exclude_examples=True, cases_path=cases_path, exclude=exclude)
     rule_pred, metrics = _run(cases)
     llm_pred, llm_metrics = _run(cases, use_llm=True)
     pct = lambda v: "N/A" if v is None else f"{v * 100:.1f}%"
@@ -413,30 +475,44 @@ def compare(split="dev"):
     table += ["", "## 규칙+LLM에서 의도·계산이 바뀐 문장", "", "| id | 문장 | 정답 | 규칙 | 규칙+LLM | 의도 결과 |",
               "| --- | --- | --- | --- | --- | --- |"]
     table += [f"| {c['id']} | {c['question']} | {c['정답']} | {c['규칙']} | {c['규칙+LLM']} | {c['결과']} |" for c in changed]
+    policies = policy_table(cases, rule_pred, llm_metrics)
+    table += ["", "## LLM 의도를 어디까지 쓸지 (같은 LLM 응답)", "",
+              "| 방식 | 정확도 | 규칙 대비 고침 | 새로 틀림 | " + " | ".join(LABELS) + " |",
+              "| --- | ---: | ---: | ---: | " + " | ".join("---:" for _ in LABELS) + " |"]
+    for p in policies:
+        cells = [f"{h}/{n}" + (f" (오탐 {fp})" if fp else "") for h, n, fp in (p["라벨별"][label] for label in LABELS)]
+        table.append(f"| {p['방식']} | {pct(p['정확도'])} | {p['고침']} | {p['새로 틀림']} | " + " | ".join(cells) + " |")
+    table.append("")
+    table.append("※ 규칙이 질문 없음·sensitive·refuse로 정한 문장은 LLM을 안 불러서 세 방식이 같아요. '규칙+LLM' 열은 '지금' 방식이에요.")
     summary = "\n".join(table) + "\n"
     detail = _markdown(split + " · 규칙+LLM", cases, llm_metrics)
     return {"report": summary + "\n" + detail, "summary": summary, "detail": detail, "cases": cases,
-            "rule": (rule_pred, metrics), "llm": (llm_pred, llm_metrics), "changed": changed}
+            "rule": (rule_pred, metrics), "llm": (llm_pred, llm_metrics), "changed": changed, "policies": policies}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--split", choices=("dev", "test", "all"), default="dev")
     parser.add_argument("--llm", action="store_true", help="규칙 vs 규칙+분류 보조 LLM 비교")
+    parser.add_argument("--cases", type=Path, help="다른 질문 파일(JSONL)로 채점 (예: 처음 보는 질문). --split은 무시")
+    parser.add_argument("--exclude", default="", help="뺄 id, 쉼표로 구분")
     parser.add_argument("--out", type=Path, help="마크다운 결과 저장 경로")
     parser.add_argument("--apply-review", action="store_true", help="검수 CSV 수정 칸을 JSONL에 반영")
     args = parser.parse_args()
 
-    if args.split == "test":
+    exclude = tuple(x.strip() for x in args.exclude.split(",") if x.strip())
+    if args.cases:
+        args.split = "all"
+    if args.split == "test" and not args.cases:
         print("경고: test 는 최종 비교 때 한 번만 재세요.", file=sys.stderr)
     if args.apply_review:
         _apply_review()
     if args.llm:
-        report = compare(args.split)["report"]
+        report = compare(args.split, args.cases, exclude)["report"]
     else:
-        cases = _scoring_cases(args.split)
+        cases = _scoring_cases(args.split, cases_path=args.cases, exclude=exclude)
         _, metrics = _run(cases)
-        report = _markdown(args.split, cases, metrics)
+        report = _markdown(args.cases.name if args.cases else args.split, cases, metrics)
     print(report, end="")
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)

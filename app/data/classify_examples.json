@@ -12,8 +12,11 @@
       "id": "rule-11-a",
       "purpose": "label",
       "question": "입사 3년차인데 연차 일수 계산해 줘",
-      "intent": "rule",
-      "tools": [],
+      "intent": "both",
+      "tools": [
+        "profile",
+        "leave_balance"
+      ],
       "calc": {
         "type": "annual_leave",
         "slots": {
@@ -152,8 +155,11 @@
       "id": "rule-14-a",
       "purpose": "calculation",
       "question": "제 번호 010-1234-5678인데, 직급 4급이고 부양가족은 배우자 1명과 8세 자녀 1명이야. 가족수당 계산해 줘",
-      "intent": "rule",
-      "tools": [],
+      "intent": "both",
+      "tools": [
+        "profile",
+        "family"
+      ],
       "calc": {
         "type": "family_allowance",
         "slots": {

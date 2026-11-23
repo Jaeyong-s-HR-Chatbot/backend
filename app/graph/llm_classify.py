@@ -1,7 +1,7 @@
 """임직원 질문 분류 보조 LLM (② 놓친 민감·타인 조회 보완 + 계산 값 추출).
 
-nodes._classify_intent가 규칙 분류 뒤에 불러요. 의도·조회 도구는 규칙 결과를 쓰고, 여기 응답에서는
-sensitive·refuse 판정과 계산 값(calc)만 가져가요. 보안문서 판단(conf_doc)·인사팀 기간 값(admin_params_llm)도
+nodes._classify_intent가 규칙 분류 뒤에 불러요. 여기 응답의 sensitive·refuse 판정과 계산 값(calc)을 쓰고,
+규칙이 rule·out_of_scope로 냈으면 의도도 이 응답(질문 없음 포함)을 따라요. 조회 도구는 규칙(키워드)이 골라요. 보안문서 판단(conf_doc)·인사팀 기간 값(admin_params_llm)도
 이 파일의 chat_json·enabled를 같이 써요."""
 import hashlib
 import json
@@ -20,7 +20,7 @@ from .. import config, tools
 
 log = logging.getLogger("hr_chat")
 
-INTENTS = ("rule", "lookup", "both", "sensitive", "refuse", "out_of_scope")
+INTENTS = ("rule", "lookup", "both", "sensitive", "refuse", "out_of_scope", "no_question")
 CALC_TYPES = ("annual_leave", "overtime", "family_allowance", "business_trip")
 TOOL_NAMES = ("profile", *(name for _, name, _ in tools.TOOL_KEYWORDS))
 OUTPUT_LIMIT = 512
@@ -95,8 +95,8 @@ def _system_prompt(today: date) -> str:
 - out_of_scope: 인사 규정·본인 인사 데이터와 관계없음 (날씨, 잡담, 재테크, 사내 IT·총무, 다른 조직의 제도 등).
 - sensitive: 직장 내 괴롭힘·성희롱·폭언 등 피해·고충을 알리거나 도움을 구함. "괴롭힘" 같은 단어가 없어도 따돌림·무시·배제·위협·모욕·원치 않는 사적 접촉처럼 피해를 겪고 있다는 호소(예: "저를 일부러 피해요", "의견만 무시해요", "불안하고 힘들어요")면 sensitive.
 - refuse: 다른 직원의 개인정보·급여·인사정보 등 권한 밖 자료를 요구함.
-- no_question은 호출 전에 처리하므로 출력하지 않습니다.
-경계: 일반 제도 설명은 rule, 본인 잔액까지 기준과 대조하면 both. 저장된 신청 상태는 lookup, 앞으로 신청할 방법·서류는 rule.
+- no_question: 묻는 내용이 없음. 인사말·감사·맞장구·자기소개·접속 확인, 사번·이름·연락처만 적은 문장.
+경계: 일반 제도 설명은 rule, 본인 잔액까지 기준과 대조하면 both. 본인 상황을 말하며 값을 주면("제 통상임금 320만인데", "작년 3월에 입사했는데") 본인 기록과 대조하니 both, 가정·일반 조건("통상임금 320만원이면", "직급 4급일 때")은 rule. 저장된 신청 상태는 lookup, 앞으로 신청할 방법·서류는 rule.
 결혼·출산·사망·이사·육아휴직·퇴직 같은 생애 이벤트도 주제가 아니라 필요한 것으로 나눕니다: 규정만 필요하면 rule, 본인 자료도 필요하면 both.
 우리 회사 인사 규정으로 답하는 질문이면 rule, 공무원·다른 회사 제도나 인사와 무관한 회사 일은 out_of_scope입니다.
 가족수당 금액·내역은 payroll, 부양가족 등록 자료는 family입니다.
@@ -113,11 +113,6 @@ business_trip(nights, days, region).
 """
     examples = []
     for example in _examples():
-        if example.get("intent") == "no_question":
-            examples.append(
-                f"사전 종료 예시 (no_question, 분류 호출 대상 아님): {example['question']}"
-            )
-            continue
         expected = {
             "intent": example["intent"],
             "tools": example["tools"],
@@ -373,7 +368,7 @@ def _validate_response(raw: str, today: date) -> dict | None:
     if result["intent"] in {"lookup", "both"} and result["tools"] is not None:
         if "profile" not in result["tools"]:
             result["tools"].insert(0, "profile")
-    if result["intent"] in {"sensitive", "refuse", "out_of_scope"}:
+    if result["intent"] in {"sensitive", "refuse", "out_of_scope", "no_question"}:
         result["tools"] = []
         result["calc"] = None
     return result

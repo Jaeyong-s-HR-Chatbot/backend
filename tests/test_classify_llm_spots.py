@@ -158,3 +158,28 @@ def test_admin_params_validation():
         == {"leave_type": ["생리휴가", "보건휴가"]}
     assert admin_params_llm.validate_params("service_anniversary", {"years": [10, "20", -1, "x"]}) == {"years": [10, 20]}
     assert admin_params_llm.validate_params("service_anniversary", {"years": 10}) == {}   # 목록만 받는 인자
+
+
+def test_admin_llm_drops_values_not_in_question(monkeypatch, llm_on):
+    """27B 평가 A-092·A-109: 질문에 없는 기준값·이번 달을 지어내면 버리고 도구 기본값을 씀"""
+    q = "복지포인트 많이 남았는데 곧 만료되는 사람"
+    rule = classify_admin_state(_admin_state(q), TODAY, use_llm=False)
+    monkeypatch.setattr(llm_classify, "chat_json", _fake_chat({"params": {"within_days": 30, "min_remaining": 100}}, []))
+    assert classify_admin_state(_admin_state(q), TODAY)["admin_params"] == rule["admin_params"]
+    q = "부부가 둘 다 직원인데 가족수당 둘 다 받는 경우 있어?"
+    monkeypatch.setattr(llm_classify, "chat_json", _fake_chat({"params": {"pay_month": "2026-11"}}, []))
+    assert "pay_month" not in classify_admin_state(_admin_state(q), TODAY)["admin_params"]
+
+
+@pytest.mark.parametrize("q, value, ok", [
+    ("근속 20년 이상이고 정년까지 3년 이상 남은 직원", 3, True),
+    ("사용률 30% 안 되는 부서", 0.3, True),
+    ("10월에 챗봇으로 많이 물어본 주제", "2026-10", True),
+    ("작년 남은 연차 명단", 2025, True),
+    ("생리휴가·보건휴가 현황", ["생리휴가", "보건휴가"], True),
+    ("복지포인트 곧 만료되는 사람", 30, False),
+    ("부부 가족수당 중복", "2026-11", False),
+    ("휴가 현황", ["연차"], False),
+])
+def test_admin_llm_grounding(q, value, ok):
+    assert admin_params_llm._grounded(q, value) is ok

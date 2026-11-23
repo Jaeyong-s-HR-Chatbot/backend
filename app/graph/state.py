@@ -1,7 +1,7 @@
 """파이프라인 단계 사이에 들고 다니는 값 (HRState). 팀 합의 대상이에요."""
 from typing import Literal, TypedDict
 
-Intent = Literal["rule", "lookup", "both", "sensitive", "refuse", "out_of_scope",
+Intent = Literal["rule", "lookup", "both", "sensitive", "refuse", "out_of_scope", "no_question",
                  "data"]   # data는 인사팀(hr_admin) 전용
 
 

@@ -142,4 +142,30 @@ def extract(question: str, tool: str, today: date) -> dict | None:
         return None
     if not isinstance(payload, dict) or not isinstance(payload.get("params"), dict):
         return None
-    return validate_params(tool, payload["params"])
+    params = validate_params(tool, payload["params"])
+    grounded = {k: v for k, v in params.items() if _grounded(question, v)}
+    if len(grounded) < len(params):
+        log.warning("인사팀 인자 LLM 응답에서 질문에 없는 값을 제외했습니다")
+    return grounded
+
+
+# 날짜·기간 값은 질문에 기간을 가리키는 말이 있을 때만 받아요 ("곧 만료되는 사람"에 이번 달을 지어내지 않게)
+_PERIOD_CUE = re.compile(r"\d|올해|금년|이번|지난|작년|내년|다음|요즘|최근|분기|상반기|하반기|오늘|어제|내일|연말|연초|월|주")
+
+
+def _grounded(question: str, value) -> bool:
+    """LLM이 준 값이 질문에 근거가 있는지. 숫자는 질문에 그 숫자가, 글자는 그 말이, 날짜는 기간을 가리키는 말이 있어야 해요.
+    (27B 평가: '복지포인트 많이 남았는데 곧 만료되는 사람'에 30일·100포인트를 지어냄)"""
+    q = question.replace(" ", "").replace(",", "")
+    if isinstance(value, list):
+        return all(_grounded(question, v) for v in value)
+    if isinstance(value, date) or (isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", value)):
+        return bool(_PERIOD_CUE.search(question))
+    if isinstance(value, int) and 1900 <= value <= 2100:   # 연도: "올해·작년"처럼 숫자 없이 말함
+        return bool(_PERIOD_CUE.search(question)) or str(value) in q
+    if isinstance(value, (int, float)):
+        numbers = {value} | ({round(value * 100, 6)} if isinstance(value, float) and value <= 1 else set())  # 0.3 ↔ 30%
+        return any(str(int(n)) in q for n in numbers if float(n).is_integer())
+    if isinstance(value, str):
+        return value.replace(" ", "") in q
+    return False

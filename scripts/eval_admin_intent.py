@@ -38,6 +38,24 @@ def load_items(path: Path = GOLDEN_PATH) -> tuple[list[dict], date]:
     return [i for i in data["items"] if i["role"] == "hr_admin"], date.fromisoformat(data["as_of"])
 
 
+def load_extra_items(path: Path, as_of: date = date(2026, 11, 9), exclude=()) -> tuple[list[dict], date]:
+    """다른 질문 파일(처음 보는 질문 등): 한 줄에 {"id", "question", "intent", "tool", "params"}, ``` 줄은 건너뜀.
+    as_of는 질문을 만들 때 정한 오늘 날짜 (상대 날짜 정답의 기준)"""
+    items = []
+    for n, line in enumerate(Path(path).read_text(encoding="utf-8-sig").splitlines(), 1):
+        s = line.strip()
+        if not s or s.startswith("```"):
+            continue
+        it = json.loads(s)
+        if not {"id", "question", "intent"} <= set(it):
+            raise ValueError(f"{path}:{n}: id·question·intent가 필요해요")
+        if it["id"] in exclude:
+            continue
+        items.append({"role": "hr_admin", "split": it.get("split", "extra"), "tool": it.get("tool"),
+                      "params": it.get("params") or {}, **{k: it[k] for k in ("id", "question", "intent")}})
+    return items, as_of
+
+
 def same_intent(v):
     return "both" if v == "data" else v
 
@@ -183,14 +201,20 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--split", choices=("all", "dev", "test", "uncertain"), default="all")
     ap.add_argument("--llm", action="store_true", help="규칙 vs 규칙+기간·기준값 LLM 비교")
+    ap.add_argument("--cases", type=Path, help="다른 질문 파일(JSONL)로 채점 (예: 처음 보는 질문, 기준일 2026-11-09)")
+    ap.add_argument("--exclude", default="", help="뺄 id, 쉼표로 구분")
     ap.add_argument("--save", action="store_true", help="eval/golden/runs/에 결과 저장")
     args = ap.parse_args()
-    result = run(args.split)
+    items = as_of = None
+    if args.cases:
+        exclude = tuple(x.strip() for x in args.exclude.split(",") if x.strip())
+        items, as_of = load_extra_items(args.cases, exclude=exclude)
+    result = run(args.split, items=items, as_of=as_of)
     print(markdown(result))
     if args.llm:
         if config.USE_FAKE_LLM:
             raise SystemExit("--llm은 .env에 LLM_BASE_URL이 있어야 해요")
-        llm = run(args.split, use_llm=True)
+        llm = run(args.split, items=items, as_of=as_of, use_llm=True)
         print("\n## 규칙+LLM (기간·기준값)\n")
         print(markdown(llm))
         fixed = [x["id"] for x, y in zip(result["rows"], llm["rows"]) if x["params_ok"] is False and y["params_ok"]]
