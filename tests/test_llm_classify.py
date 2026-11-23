@@ -283,3 +283,28 @@ def test_classifier_receives_original_question(monkeypatch, llm_on):
                         lambda q, today: seen.append(q) or {"intent": "rule", "tools": [], "calc": None})
     nodes.classify(_state("제 전화번호 010-1234-5678인데 경조휴가 규정 알려줘"))
     assert seen and "010-1234-5678" in seen[0]
+
+
+@pytest.mark.parametrize("question, rule_intent, llm_intent, expected", [
+    ("광역시 출장비 기준을 알려 줘", "rule", "lookup", "lookup"),          # 규칙 rule → LLM 의도
+    ("오늘 날씨 어때?", "out_of_scope", "no_question", "no_question"),   # 규칙 out_of_scope → LLM 의도
+    ("내 연차 잔여와 사용 기준을 같이 알려 줘", "both", "rule", "both"),  # 규칙 both → 규칙 유지
+])
+def test_llm_decides_when_rule_is_rule_or_out_of_scope(monkeypatch, llm_on, question, rule_intent, llm_intent, expected):
+    assert nodes._classify_rule(_state(question))["intent"] == rule_intent
+    monkeypatch.setattr(llm_classify, "classify", lambda *a: {"intent": llm_intent, "tools": [], "calc": None})
+    assert nodes.classify(_state(question))["intent"] == expected
+
+
+def test_no_question_is_valid_llm_intent():
+    assert "no_question" in llm_classify.OUTPUT_SCHEMA["properties"]["intent"]["enum"]
+    r = llm_classify._validate_response(json.dumps({"intent": "no_question", "tools": ["profile"], "calc": None}),
+                                        date(2026, 11, 15))
+    assert r == {"intent": "no_question", "tools": [], "calc": None}
+
+
+def test_pipeline_routes_llm_no_question(monkeypatch):
+    from app.graph import build
+    monkeypatch.setattr(nodes, "classify", lambda s: {"intent": "no_question"})
+    r = build.run_pipeline("E1584", "employee", "오늘도 화이팅입니다")
+    assert r["kind"] == "refused" and r["answer"] == nodes.refuse_no_question({})["answer"]

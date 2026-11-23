@@ -224,6 +224,11 @@ def classify(s: HRState) -> HRState:
     return {**_classify_intent(s), **conf}
 
 
+# 규칙이 이 의도로 냈으면 LLM 의도를 따라요. 규칙이 자신 없을 때 가는 곳이라서예요 (인사 단어가 없으면 out_of_scope,
+# 본인·조회 신호가 없으면 rule). Colab 27B 처음 보는 질문: 66.0% → 79.6%, 새로 틀림 0 (기존 평가셋 95.2% → 94.5%)
+LLM_DECIDES = {"rule", "out_of_scope"}
+
+
 def _classify_intent(s: HRState) -> HRState:
     if s.get("role") == "hr_admin":                # 인사팀은 전용 분류 (역할은 토큰에서)
         return classify_admin_state(s)
@@ -238,7 +243,9 @@ def _classify_intent(s: HRState) -> HRState:
         return rule
     if result["intent"] in {"sensitive", "refuse"}:   # 규칙이 놓친 민감·타인 조회 보완
         return {"intent": result["intent"]}
-    return {**rule, "classifier_calc": result["calc"]}   # 의도·조회 도구는 규칙 그대로
+    if rule["intent"] in LLM_DECIDES:                # 규칙이 rule·out_of_scope면 LLM 의도를 따름
+        return {"intent": result["intent"], "classifier_calc": result["calc"]}
+    return {**rule, "classifier_calc": result["calc"]}   # 규칙이 lookup·both로 정했으면 그대로
 
 
 # ───────────── lookup: 본인 조회 ─────────────

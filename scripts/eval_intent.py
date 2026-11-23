@@ -420,8 +420,8 @@ def _run(cases, use_llm=False):
 
 # LLM 의도를 어디까지 쓸지 (같은 LLM 응답으로 비교, 호출은 늘지 않아요)
 POLICIES = {
-    "지금 (sensitive·refuse만)": lambda rule, llm: llm if llm in {"sensitive", "refuse"} else rule,
-    "규칙이 rule·out_of_scope일 때만 LLM": lambda rule, llm: (llm if llm and (llm in {"sensitive", "refuse"}
+    "예전 (sensitive·refuse만)": lambda rule, llm: llm if llm in {"sensitive", "refuse"} else rule,
+    "지금 (규칙이 rule·out_of_scope면 LLM)": lambda rule, llm: (llm if llm and (llm in {"sensitive", "refuse"}
                                                             or rule in {"rule", "out_of_scope"}) else rule),
     "전부 LLM (hybrid)": lambda rule, llm: llm or rule,
 }
@@ -483,7 +483,7 @@ def compare(split="dev", cases_path=None, exclude=()):
         cells = [f"{h}/{n}" + (f" (오탐 {fp})" if fp else "") for h, n, fp in (p["라벨별"][label] for label in LABELS)]
         table.append(f"| {p['방식']} | {pct(p['정확도'])} | {p['고침']} | {p['새로 틀림']} | " + " | ".join(cells) + " |")
     table.append("")
-    table.append("※ LLM 출력에는 no_question이 없어요 (질문 없음은 LLM 호출 전에 규칙이 판단). 그래서 질문 없음 오답은 어느 방식으로도 안 고쳐져요.")
+    table.append("※ 규칙이 질문 없음·sensitive·refuse로 정한 문장은 LLM을 안 불러서 세 방식이 같아요. '규칙+LLM' 열은 '지금' 방식이에요.")
     summary = "\n".join(table) + "\n"
     detail = _markdown(split + " · 규칙+LLM", cases, llm_metrics)
     return {"report": summary + "\n" + detail, "summary": summary, "detail": detail, "cases": cases,
