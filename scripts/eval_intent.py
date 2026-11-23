@@ -348,9 +348,32 @@ def _markdown(split, cases, metrics):
     return "\n".join(lines) + "\n"
 
 
-def _scoring_cases(split, exclude_examples=False):
-    cases = _read_cases()
-    cases = cases if split == "all" else [case for case in cases if case["split"] == split]
+def load_extra_cases(path, exclude=()):
+    """다른 질문 파일(처음 보는 질문 등). 한 줄에 {"id", "question", "intent", "tools", "calc"} 하나, ``` 줄은 건너뜀.
+    exclude: 뺄 id (기존 평가셋과 거의 같은 문장 등)"""
+    cases = []
+    for n, line in enumerate(Path(path).read_text(encoding="utf-8-sig").splitlines(), 1):
+        s = line.strip()
+        if not s or s.startswith("```"):
+            continue
+        case = json.loads(s)
+        if not {"id", "question", "intent", "tools", "calc"} <= set(case) or case["intent"] not in LABELS:
+            raise ValueError(f"{path}:{n}: id·question·intent·tools·calc가 필요하고 intent는 {LABELS} 중 하나")
+        calc = case["calc"]
+        if isinstance(calc, dict) and "type" not in calc and len(calc) == 1:   # {"overtime": {...}} 모양도 받아요
+            kind, slots = next(iter(calc.items()))
+            case["calc"] = {"type": kind, "slots": slots}
+        if case["id"] not in exclude:
+            cases.append({**case, "split": case.get("split", "extra")})
+    return cases
+
+
+def _scoring_cases(split, exclude_examples=False, cases_path=None, exclude=()):
+    if cases_path:                                    # 다른 질문 파일은 split 구분 없이 전부
+        cases = load_extra_cases(cases_path, exclude)
+    else:
+        cases = _read_cases()
+        cases = cases if split == "all" else [case for case in cases if case["split"] == split]
     if not exclude_examples:
         return cases
     examples = json.loads(EXAMPLES_PATH.read_text(encoding="utf-8")).get("examples", [])
@@ -384,11 +407,11 @@ def _run(cases, use_llm=False):
     return predictions, metrics
 
 
-def compare(split="dev"):
+def compare(split="dev", cases_path=None, exclude=()):
     """규칙 vs 규칙+분류 보조 LLM을 같은 문장(few-shot 예시 쌍 제외)으로 채점해요. Colab 노트북도 이걸 불러요.
 
     반환: {"report": 마크다운, "cases", "rule": (예측, 지표), "llm": (예측, 지표), "changed": 바뀐 문장 목록}"""
-    cases = _scoring_cases(split, exclude_examples=True)
+    cases = _scoring_cases(split, exclude_examples=True, cases_path=cases_path, exclude=exclude)
     rule_pred, metrics = _run(cases)
     llm_pred, llm_metrics = _run(cases, use_llm=True)
     pct = lambda v: "N/A" if v is None else f"{v * 100:.1f}%"
@@ -423,20 +446,25 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--split", choices=("dev", "test", "all"), default="dev")
     parser.add_argument("--llm", action="store_true", help="규칙 vs 규칙+분류 보조 LLM 비교")
+    parser.add_argument("--cases", type=Path, help="다른 질문 파일(JSONL)로 채점 (예: 처음 보는 질문). --split은 무시")
+    parser.add_argument("--exclude", default="", help="뺄 id, 쉼표로 구분")
     parser.add_argument("--out", type=Path, help="마크다운 결과 저장 경로")
     parser.add_argument("--apply-review", action="store_true", help="검수 CSV 수정 칸을 JSONL에 반영")
     args = parser.parse_args()
 
-    if args.split == "test":
+    exclude = tuple(x.strip() for x in args.exclude.split(",") if x.strip())
+    if args.cases:
+        args.split = "all"
+    if args.split == "test" and not args.cases:
         print("경고: test 는 최종 비교 때 한 번만 재세요.", file=sys.stderr)
     if args.apply_review:
         _apply_review()
     if args.llm:
-        report = compare(args.split)["report"]
+        report = compare(args.split, args.cases, exclude)["report"]
     else:
-        cases = _scoring_cases(args.split)
+        cases = _scoring_cases(args.split, cases_path=args.cases, exclude=exclude)
         _, metrics = _run(cases)
-        report = _markdown(args.split, cases, metrics)
+        report = _markdown(args.cases.name if args.cases else args.split, cases, metrics)
     print(report, end="")
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
