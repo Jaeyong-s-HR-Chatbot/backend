@@ -391,6 +391,15 @@ def _run(cases, use_llm=False):
     calc_rules.load_rules.cache_clear()
     predictions = []
     elapsed_ms = []
+    raw = {}                                   # 질문 → LLM이 고른 의도 (지금 방식은 sensitive·refuse만 쓰고 나머지는 버림)
+    original_classify = llm_classify.classify
+
+    def recording(question, today):
+        result = original_classify(question, today)
+        raw[question] = result["intent"] if result else None
+        return result
+
+    llm_classify.classify = recording
     try:
         with (llm_classify.evaluation_cache(CACHE_PATH) if use_llm else nullcontext(None)) as stats:
             for case in cases:
@@ -398,13 +407,43 @@ def _run(cases, use_llm=False):
                 predictions.append(_predict(case))
                 elapsed_ms.append((perf_counter() - started) * 1000)
     finally:
+        llm_classify.classify = original_classify
         calc_rules.load_rules.cache_clear()
         config.CLASSIFY_LLM = original
     metrics = _metrics(cases, predictions, elapsed_ms)
     if use_llm:
         metrics["llm"] = {"calls": stats.calls, "cache_hits": stats.cache_hits, "errors": len(stats.errors),
                           "json_failures": stats.json_failures, "validation_failures": stats.validation_failures}
+        metrics["llm_raw"] = [raw.get(case["question"]) for case in cases]
     return predictions, metrics
+
+
+# LLM 의도를 어디까지 쓸지 (같은 LLM 응답으로 비교, 호출은 늘지 않아요)
+POLICIES = {
+    "지금 (sensitive·refuse만)": lambda rule, llm: llm if llm in {"sensitive", "refuse"} else rule,
+    "규칙이 rule·out_of_scope일 때만 LLM": lambda rule, llm: (llm if llm and (llm in {"sensitive", "refuse"}
+                                                            or rule in {"rule", "out_of_scope"}) else rule),
+    "전부 LLM (hybrid)": lambda rule, llm: llm or rule,
+}
+
+
+def policy_table(cases, rule_pred, llm_metrics):
+    """LLM이 고른 의도를 쓰는 범위별 정확도. LLM을 안 부른 문장(규칙이 sensitive·refuse·질문 없음)은 규칙 결과 그대로."""
+    raw = llm_metrics.get("llm_raw") or [None] * len(cases)
+    out = []
+    for name, pick in POLICIES.items():
+        pred = [pick(r[0], l) for r, l in zip(rule_pred, raw)]
+        ok = [p == c["intent"] for p, c in zip(pred, cases)]
+        by = {}
+        for label in LABELS:
+            idx = [i for i, c in enumerate(cases) if c["intent"] == label]
+            hit = sum(ok[i] for i in idx)
+            fp = sum(1 for i, p in enumerate(pred) if p == label and cases[i]["intent"] != label)
+            by[label] = (hit, len(idx), fp)
+        fixed = sum(1 for p, r, c in zip(pred, rule_pred, cases) if p == c["intent"] != r[0])
+        broke = sum(1 for p, r, c in zip(pred, rule_pred, cases) if r[0] == c["intent"] != p)
+        out.append({"방식": name, "정확도": sum(ok) / len(cases), "고침": fixed, "새로 틀림": broke, "라벨별": by})
+    return out
 
 
 def compare(split="dev", cases_path=None, exclude=()):
@@ -436,10 +475,19 @@ def compare(split="dev", cases_path=None, exclude=()):
     table += ["", "## 규칙+LLM에서 의도·계산이 바뀐 문장", "", "| id | 문장 | 정답 | 규칙 | 규칙+LLM | 의도 결과 |",
               "| --- | --- | --- | --- | --- | --- |"]
     table += [f"| {c['id']} | {c['question']} | {c['정답']} | {c['규칙']} | {c['규칙+LLM']} | {c['결과']} |" for c in changed]
+    policies = policy_table(cases, rule_pred, llm_metrics)
+    table += ["", "## LLM 의도를 어디까지 쓸지 (같은 LLM 응답)", "",
+              "| 방식 | 정확도 | 규칙 대비 고침 | 새로 틀림 | " + " | ".join(LABELS) + " |",
+              "| --- | ---: | ---: | ---: | " + " | ".join("---:" for _ in LABELS) + " |"]
+    for p in policies:
+        cells = [f"{h}/{n}" + (f" (오탐 {fp})" if fp else "") for h, n, fp in (p["라벨별"][label] for label in LABELS)]
+        table.append(f"| {p['방식']} | {pct(p['정확도'])} | {p['고침']} | {p['새로 틀림']} | " + " | ".join(cells) + " |")
+    table.append("")
+    table.append("※ LLM 출력에는 no_question이 없어요 (질문 없음은 LLM 호출 전에 규칙이 판단). 그래서 질문 없음 오답은 어느 방식으로도 안 고쳐져요.")
     summary = "\n".join(table) + "\n"
     detail = _markdown(split + " · 규칙+LLM", cases, llm_metrics)
     return {"report": summary + "\n" + detail, "summary": summary, "detail": detail, "cases": cases,
-            "rule": (rule_pred, metrics), "llm": (llm_pred, llm_metrics), "changed": changed}
+            "rule": (rule_pred, metrics), "llm": (llm_pred, llm_metrics), "changed": changed, "policies": policies}
 
 
 def main():
