@@ -79,6 +79,23 @@ REQUEST_TYPES = {"경조금": "경조금신청", "출장": "출장신청", "출�
                  "복직": "복직신청", "휴가": "휴가신청"}
 COURSE_TYPES = {"법정": "법정", "의무교육": "법정", "직무": "직무", "승진교육": "승진", "입문": "신규", "신규": "신규",
                 "리더십": "리더십"}
+# 교육 과정 이름: "기관사 보수교육", "개인정보보호 교육", "승객 응대 실무", "비상 상황 대응 훈련"
+_COURSE = re.compile(r"((?:[가-힣A-Za-z]+\s*){0,3}?[가-힣A-Za-z]*(?:교육|과정|실무|훈련))")
+_COURSE_LEAD = re.compile(r"^(?:(?:올해|작년|이번|아직|필수|우리|전체|제|내|부서|팀)\s*)+")
+_COURSE_GENERIC = {"교육", "과정", "필수교육", "의무교육", "교육과정"}
+
+
+def _course_name(q: str) -> str | None:
+    """질문의 교육 과정 이름. 구분 단어(법정·신규·입문·승진·리더십·직무)가 들어 있거나 '교육'뿐이면 None (구분으로 거름)"""
+    m = _COURSE.search(q)
+    if not m:
+        return None
+    name = _COURSE_LEAD.sub("", m.group(1).strip()).strip()
+    if name.replace(" ", "") in _COURSE_GENERIC or any(k in name for k in COURSE_TYPES):
+        return None
+    return name
+
+
 # 규정만 묻는 말 ("보충해도 돼?", "줄여줄 수 있어?", "배정 기준"). 사람·집계를 묻는 말(DATA_WORDS)이 없으면 도구를 안 써요
 RULE_ASK = re.compile(r"해도\s*(?:돼|되)|수\s*있(?:어|나|는\s*경우|을까)|가능|기준|얼마\s*(?:줘|주|받)|해야\s*(?:돼|되|하)|되나|되는지")
 DATA_WORDS = ["명단", "누구", "몇 명", "인원", "현황", "대상자", "목록", "리스트", "직원", "사람", "부서별", "TOP",
@@ -191,8 +208,11 @@ def pick_tool(q: str, today: date) -> tuple[str | None, dict]:
     if "수습" in q:
         return "probation_ending", {"asof": today, "within_days": _num(r"(\d+)\s*일", q) or 30}
     # 교육 미이수는 입사자 단어보다 먼저 ("신규입사자 입문 과정 안 들은 사람")
-    if has("교육", "이수", "과정") and has("미이수", "안 들은", "안들은", "못 들은", "이수 안"):
+    if has("교육", "이수", "과정", "실무", "훈련") and has("미이수", "안 들은", "안들은", "못 들은", "이수 안"):
         ct = next((v for k, v in COURSE_TYPES.items() if k in q), "법정")
+        name = _course_name(q)
+        if name:                                   # "기관사 보수교육 대상인데 안 들은 사람" → 그 과정만
+            return "training_incomplete", {"year": year, "course_name": name}
         return "training_incomplete", {"year": year, "course_type": ct}
     if "입사자" in q or ("입사" in q and has("몇 명", "누구", "명단")):
         s, e = p or _month(today.year, today.month)
