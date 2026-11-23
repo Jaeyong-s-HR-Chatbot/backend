@@ -167,7 +167,45 @@ def run(split: str = "all", items=None, as_of: date | None = None, use_llm: bool
                      "intent_ok": same_intent(p["intent"]) == gold, "tool_ok": tool_ok, "params_ok": params_ok,
                      "scored": True, "ms": round(ms, 1)})
     by_split = {sp: summarize([r for r in rows if r["split"] == sp]) for sp in sorted({r["split"] for r in rows})}
-    return {"summary": summarize(rows), "by_split": by_split, "rows": rows}
+    out = {"summary": summarize(rows), "by_split": by_split, "rows": rows}
+    if use_llm:
+        out["policies"] = policy_table(rows, as_of)
+    return out
+
+
+def policy_table(rows: list[dict], as_of: date) -> list[dict]:
+    """LLM이 의도·도구를 어디까지 고를지 세 방식 비교 (평가 전용: 모든 문항에 의도·도구 LLM을 한 번씩 불러요).
+    - 규칙만 / 지금(규칙이 rule·out_of_scope이고 도구가 없을 때만 LLM) / 전부 LLM(규칙이 refuse면 규칙)"""
+    from app.graph import admin_intent_llm
+    from app.graph.admin_classify import LLM_DECIDES, classify_admin
+
+    policies = {"규칙만": [], "지금 (규칙이 rule·out_of_scope면 LLM)": [], "전부 LLM": []}
+    for r in rows:
+        if r["pred_intent"] == "no_question":
+            for v in policies.values():
+                v.append(("no_question", None))
+            continue
+        rule = classify_admin(r["question"], as_of)
+        rule_pick = (same_intent(rule["intent"]), rule.get("admin_tool"))
+        llm = admin_intent_llm.classify(r["question"])
+        llm_pick = (same_intent(llm["intent"]), llm["admin_tool"]) if llm else rule_pick
+        policies["규칙만"].append(rule_pick)
+        policies["지금 (규칙이 rule·out_of_scope면 LLM)"].append(
+            llm_pick if rule["intent"] in LLM_DECIDES and not rule.get("admin_tool") else rule_pick)
+        policies["전부 LLM"].append(rule_pick if rule["intent"] == "refuse" else llm_pick)
+    out = []
+    for name, picks in policies.items():
+        intent_ok = [p[0] == r["gold_intent"] for p, r in zip(picks, rows)]
+        tool_rows = [(p, r) for p, r in zip(picks, rows) if r["gold_tool"]]
+        base = policies["규칙만"]
+        out.append({"방식": name, "의도 정확도": _rate(intent_ok),
+                    "도구 정확도": _rate([p[1] == r["gold_tool"] for p, r in tool_rows]),
+                    "도구 오탐": sum(1 for p, r in zip(picks, rows) if p[1] and not r["gold_tool"]),
+                    "고침": sum(1 for p, b, r in zip(picks, base, rows)
+                              if (p[0] == r["gold_intent"] and p[1] == r["gold_tool"]) and not (b[0] == r["gold_intent"] and b[1] == r["gold_tool"])),
+                    "새로 틀림": sum(1 for p, b, r in zip(picks, base, rows)
+                                 if (b[0] == r["gold_intent"] and b[1] == r["gold_tool"]) and not (p[0] == r["gold_intent"] and p[1] == r["gold_tool"]))})
+    return out
 
 
 def markdown(result: dict) -> str:
@@ -182,6 +220,11 @@ def markdown(result: dict) -> str:
     missing = sorted({x["gold_tool"] for x in result["rows"] if x["gold_tool"] and x["gold_tool"] not in admin_tools.ADMIN_TOOLS})
     if missing:
         lines += ["", f"골든셋 정답 도구 중 backend에 없는 도구 {len(missing)}개 (도구 정확도에서 항상 틀림): " + ", ".join(missing)]
+    if result.get("policies"):
+        lines += ["", "LLM이 의도·도구를 어디까지 고를지 (같은 LLM 응답, 인자는 안 봄)", "",
+                  "| 방식 | 의도 정확도 | 도구 정확도 | 도구 오탐 | 규칙 대비 고침 | 새로 틀림 |", "| --- | ---: | ---: | ---: | ---: | ---: |"]
+        lines += [f"| {p['방식']} | {p['의도 정확도']} | {p['도구 정확도']} | {p['도구 오탐']} | {p['고침']} | {p['새로 틀림']} |"
+                  for p in result["policies"]]
     return "\n".join(lines)
 
 

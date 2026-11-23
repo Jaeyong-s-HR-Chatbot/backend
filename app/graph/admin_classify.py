@@ -360,18 +360,39 @@ def classify_admin(q: str, today: date | None = None) -> dict:
     return {"intent": "rule", "sensitive_topic": sensitive_topic}
 
 
+# 규칙이 이 의도로 냈고 집계 도구도 못 찾았으면 LLM이 의도·도구를 골라요 (임직원과 같은 방식).
+# 규칙이 자신 없을 때 가는 곳이라서예요: 인사 단어가 없으면 out_of_scope, 도구 단어가 안 맞으면 rule.
+LLM_DECIDES = {"rule", "out_of_scope"}
+
+
+def _from_llm(llm: dict | None, rule: dict) -> dict:
+    """LLM이 고른 의도·도구로 바꿔요. LLM이 실패하면 규칙 결과 그대로."""
+    if llm is None:
+        return rule
+    topic = rule.get("sensitive_topic", False)
+    if llm["admin_tool"]:
+        return _both(llm["admin_tool"], {}, topic)     # 기간·기준값은 다음 단계(admin_params_llm)에서
+    if llm["intent"] == "refuse":
+        return {"intent": "refuse", "refuse_reason": "chat_log", "sensitive_topic": topic}
+    return {"intent": llm["intent"], "sensitive_topic": topic}
+
+
 def classify_admin_state(s: dict, today: date | None = None, use_llm: bool | None = None) -> dict:
     """인사팀 분류 진입점 (nodes.classify가 hr_admin일 때 불러요).
 
-    의도·집계 도구는 규칙이 정하고, 도구가 정해지면 ③ 그 도구의 기간·기준값만 분류 보조 LLM에 다시 물어
-    규칙이 비워 둔 인자만 형식이 맞는 LLM 값으로 채워요 (실패하면 규칙 값). today·use_llm은 평가에서만 넘겨요."""
-    from . import admin_params_llm, llm_classify   # 순환 import 방지
+    규칙이 먼저 분류하고, 규칙이 rule·out_of_scope로 냈으면(집계 도구를 못 찾았으면) 분류 보조 LLM이 의도·도구를 골라요.
+    도구가 정해지면 그 도구의 기간·기준값을 LLM에 다시 물어, 규칙이 비워 둔 인자만 질문에 근거가 있는 값으로 채워요
+    (실패하면 규칙 결과·규칙 값). today·use_llm은 평가에서만 넘겨요."""
+    from . import admin_intent_llm, admin_params_llm, llm_classify   # 순환 import 방지
     from .nodes import question_text
 
     today = today or date.today()
     question = question_text(s)
-    result = classify_admin(question, today)
+    rule = classify_admin(question, today)
+    result = rule
     use_llm = llm_classify.enabled() if use_llm is None else use_llm
+    if use_llm and rule["intent"] in LLM_DECIDES and not rule.get("admin_tool"):
+        result = _from_llm(admin_intent_llm.classify(question), rule)
     if use_llm and result.get("admin_tool"):
         params = admin_params_llm.extract(question, result["admin_tool"], today)
         if params is not None:   # 규칙이 비워 둔 인자만 채움 (규칙 값을 덮어쓰면 맞던 값이 틀어졌음: 휴가 종류 목록, 기본 월)
@@ -380,4 +401,15 @@ def classify_admin_state(s: dict, today: date | None = None, use_llm: bool | Non
                 if merged.get(key) is None:
                     merged[key] = value
             result["admin_params"] = merged
+        if result is not rule and _missing_required(result["admin_tool"], result.get("admin_params", {})):
+            log.warning("LLM이 고른 집계 도구의 필수 인자(기간 등)를 못 채워 규칙 결과를 씁니다")
+            return rule
     return result
+
+
+def _missing_required(tool: str, params: dict) -> bool:
+    import inspect
+    from .. import admin_tools
+    fn = admin_tools.ADMIN_TOOLS[tool]
+    return any(p.default is inspect.Parameter.empty and params.get(name) is None
+               for name, p in inspect.signature(fn).parameters.items())
