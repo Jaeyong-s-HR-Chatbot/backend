@@ -48,6 +48,33 @@ def question_text(s: HRState) -> str:
 
 # ───────────── classify: 의도 분류 (규칙) ─────────────
 _SENSITIVE = ["괴롭힘", "성희롱", "성추행", "폭언", "고충", "따돌림", "부당"]   # 징계는 규정 질문이 많아 민감 단어에서 뺌
+# 피해 호소: 단어("따돌림")가 아니라 표현("저를 따돌리는", "일부러 피하고", "큰소리로 위협해")으로 알아봐요
+_VICTIM_EXPR = re.compile(
+    r"따돌리|왕따"
+    r"|(?:저를|제가|저한테|저에게|저만|절)\s*[^.?!]{0,12}?(?:무시|피하|피해|빼\s*(?:고|요|서|버)|험담|욕|모욕|위협|협박|괴롭|차별|비웃)"
+    r"|제\s*의견\s*(?:만|을|은)?\s*무시"
+    r"|일부러\s*피하|정보를\s*공유하지\s*않|(?:대화방|단톡방|회식|모임)에서(?:도)?\s*(?:저를\s*)?빼"
+    r"|큰소리|인신공격|욕설|모욕적|위협(?:해|하|을)|협박"
+    r"|사적인\s*메시지|개인적인\s*만남|성적\s*(?:농담|발언|수치)|스토킹|신체\s*접촉"
+    r"|두려워|무서워|불안(?:하|해|합)|억울(?:해|하|합)|우울|잠을\s*(?:못|잘\s*수)|출근하기\s*싫|죽고\s*싶"
+)
+# 민감 단어가 있어도 피해를 말하지 않고 규정·절차만 묻는 말은 일반 규정 질문 ("괴롭힘 신고 절차가 어떻게 돼?")
+_RULE_ONLY_ASK = re.compile(r"절차|규정|기준|방법|조항|제\s?\d+\s?조|뭐야|무엇|어떻게\s*(?:돼|되|처리)|담당|창구|기한")
+_VICTIM_MARKER = re.compile(
+    r"당했|당한|당하고|겪|들었|받았|받고\s*있|저를|제가|저한테|저에게|내가|나를|힘들|괴로|두렵|두려|불안|억울|우울|무서"
+    r"|상담(?:을)?\s*(?:받고|하고)\s*싶|신고하고\s*싶|고민"
+)
+
+
+def _sensitive_kind(q: str) -> str | None:
+    """"sensitive": 괴롭힘·성희롱·폭언 등 피해·고충을 말함 (민감 단어 + 피해 표현, 또는 단어 없이 피해 호소 표현).
+    "rule": 민감 단어가 있어도 피해 표현 없이 규정·절차만 물음 → 일반 규정 질문. None: 해당 없음.
+    '징계'는 일부러 민감 단어가 아님."""
+    if any(w in q for w in _SENSITIVE):
+        return "rule" if _RULE_ONLY_ASK.search(q) and not _VICTIM_MARKER.search(q) else "sensitive"
+    return "sensitive" if _VICTIM_EXPR.search(q) else None
+
+
 _OTHER_PERSON = ["다른 직원", "다른 사람", "남의 ", "옆팀", "옆 팀"]
 _TITLE = r"(?:사원|주임|대리|과장|차장|부장|팀장|본부장|님|씨)"
 _PRIVATE = r"(?:연봉|급여|월급|연차|수당|평가|인사고과|주민번호|계좌|주소|전화번호|휴직)"
@@ -170,8 +197,9 @@ def _classify_rule(s: HRState) -> HRState:
     intent_q = _intent_question(q)
     other_id = s.get("has_other_emp_id", False) or "[사번]" in q
     is_self, has_tool, future_application_only, asks_rule = _classify_signals(s)
-    if any(w in q for w in _SENSITIVE):
-        intent = "sensitive"
+    sensitive = _sensitive_kind(q)
+    if sensitive:
+        intent = sensitive         # "sensitive" 또는 규정만 묻는 말("rule")
     elif other_id or any(w in q for w in _OTHER_PERSON) or _OTHER_NAME.search(q):
         intent = "refuse"          # 타인 조회·권한 밖
     elif _OTHER_ORG.search(intent_q) or (
