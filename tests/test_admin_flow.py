@@ -336,3 +336,18 @@ def test_eval_scores_params_by_tool_defaults():
     assert ev.effective_params("couple_family_allowance", {"pay_month": None}, as_of)["pay_month"] == "2026-10"
     assert ev.effective_params("service_anniversary", {"year": 2026}, as_of)["years"] == [10, 20, 30]
     assert "limit" not in ev.effective_params("payroll_dept_totals", {"pay_month": "2026-10"}, as_of)
+
+
+@pytest.mark.parametrize("q, params", [
+    ("기관사 보수교육 대상인데 안 들은 사람", {"course_name": "기관사 보수교육"}),       # A-077
+    ("올해 개인정보보호 교육 미이수자", {"course_name": "개인정보보호 교육"}),
+    ("승객 응대 실무 아직 안 들은 직원", {"course_name": "승객 응대 실무"}),
+    ("법정 의무교육 5종 미이수자 명단", {"course_type": "법정"}),                     # 구분 단어 → 구분으로
+    ("신규입사자 입문 과정 아직 안 들은 사람", {"course_type": "신규"}),
+    ("교육 미이수자 명단", {"course_type": "법정"}),
+])
+def test_training_incomplete_course_name_or_type(q, params):
+    r = classify_admin(q, TODAY)
+    assert r["admin_tool"] == "training_incomplete"
+    assert {k: r["admin_params"].get(k) for k in params} == params
+    assert ("course_name" in r["admin_params"]) == ("course_name" in params)
