@@ -9,5 +9,6 @@ eval/intent/cache/
 data/
 *.jsonl
 !eval/conf_doc/conf_doc_cases.jsonl
+!eval/holdout/*.jsonl
 confidential/rules/org_counts.csv
 models/
