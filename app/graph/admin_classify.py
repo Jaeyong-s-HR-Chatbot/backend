@@ -34,6 +34,8 @@ CONSULTER = re.compile(r"(?:상담|문의|신고|제보|물어|질문)\S*\s*(?:�
 
 # 1인칭이 있어도 여러 사람을 묻는 말이면 집계 질문 ("내 팀원들 연차", "제 부서 직원 명단")
 GROUP_WORDS = ["직원", "명단", "부서", "팀원", "사람", "누구", "몇 명", "전체", "TOP"]
+# 근속 연수 목록: "근속 10·20·30년", "근속 25년", "근속 10, 20년" (연도 "2026년"은 안 잡게 1~2자리 숫자만)
+SERVICE_YEARS = re.compile(r"근속\s*((?<!\d)\d{1,2}(?:\s*[·,/]\s*\d{1,2})*)\s*년")
 # 인사팀 업무 단어. 임직원 규칙의 인사 단어(_HR_WORDS)에 더해, 이것도 없고 집계 도구도 못 찾으면 out_of_scope
 ADMIN_HR_WORDS = ["지각", "조퇴", "출퇴근", "출근", "퇴근", "정년", "수습", "촉진", "근로", "통보", "퇴사", "복직",
                   "이수율", "노사", "단체협약", "취업규칙", "위원회", "채용", "전보", "발령", "인원",
@@ -284,7 +286,11 @@ def _pick_extra_tool(q: str, today: date, p, start, end, has) -> tuple[str, dict
     if has("복지포인트", "복지 포인트") and has("월할", "제대로", "맞게", "중간에 입사", "복직"):
         return "welfare_points_proration_check", {"year": year}
     if "근속" in q and has("10·20·30", "10,20,30", "10 20 30", "되는 직원", "되는 사람") and "수당" not in q:
-        return "service_anniversary", {"year": year or today.year}
+        params = {"year": year or today.year}
+        years = SERVICE_YEARS.search(q)          # "근속 10·20·30년", "근속 25년" → [10, 20, 30], [25] (없으면 도구 기본 10·20·30)
+        if years:
+            params["years"] = [int(n) for n in re.findall(r"\d+", years.group(1))]
+        return "service_anniversary", params
     # 출장·경조금
     if "출장" in q and has("일비") and has("감액", "장기"):
         return "long_trip_per_diem_check", {}

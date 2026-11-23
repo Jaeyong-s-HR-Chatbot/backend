@@ -307,3 +307,32 @@ def test_admin_chat_log_refuse_message():
     from app.graph import nodes
     msg = nodes.refuse({"intent": "refuse", "refuse_reason": "chat_log"})["answer"]
     assert "대화 내용" in msg and "집계" in msg
+
+
+@pytest.mark.parametrize("q, years", [
+    ("올해 근속 10·20·30년 되는 직원", [10, 20, 30]),
+    ("근속 25년 되는 사람 누구야", [25]),
+    ("근속 10, 20년 되는 직원", [10, 20]),
+])
+def test_service_anniversary_years_from_question(q, years):
+    r = classify_admin(q, TODAY)
+    assert r["admin_tool"] == "service_anniversary" and r["admin_params"]["years"] == years
+
+
+def test_service_anniversary_without_years_uses_tool_default():
+    r = classify_admin("올해 근속 기념 대상 되는 직원", TODAY)
+    assert r["admin_tool"] == "service_anniversary" and "years" not in r["admin_params"]
+
+
+def test_eval_scores_params_by_tool_defaults():
+    """채점: 비워 둔 인자는 도구 기본값으로 비교하고, 도구가 받지 않는 인자는 그대로 오답"""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import eval_admin_intent as ev
+    as_of = date(2026, 11, 9)
+    used = ev.effective_params("honorary_retirement_eligible", {}, as_of)
+    assert used["min_service_years"] == 20 and used["min_years_to_retire"] == 1
+    assert ev.effective_params("couple_family_allowance", {"pay_month": None}, as_of)["pay_month"] == "2026-10"
+    assert ev.effective_params("service_anniversary", {"year": 2026}, as_of)["years"] == [10, 20, 30]
+    assert "limit" not in ev.effective_params("payroll_dept_totals", {"pay_month": "2026-10"}, as_of)
