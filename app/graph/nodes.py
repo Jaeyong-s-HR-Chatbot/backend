@@ -16,7 +16,7 @@ from .. import config
 from .. import calc_rules
 from ..fake_data import HR_RECORDS
 from ..masking import mask_answer, mask_text, pseudonymize
-from . import conf_doc
+from . import conf_doc, llm_classify
 from . import retriever
 from .admin_classify import classify_admin_state
 from .state import HRState
@@ -189,16 +189,28 @@ def _classify_rule(s: HRState) -> HRState:
 
 
 def classify(s: HRState) -> HRState:
-    """0. 보안문서(노사회의록·징계회의록)가 필요한 질문인지 먼저 표시 → 1. 의도 분류 (임직원·인사팀 공통)"""
-    conf = conf_doc.detect(question_text(s))
+    """0. 보안문서(노사회의록·징계회의록)가 필요한 질문인지 먼저 표시 → 1. 의도 분류 (임직원·인사팀 공통)
+
+    둘 다 규칙이 먼저 하고, 규칙이 약한 곳만 분류 보조 LLM에 물어요 (config.CLASSIFY_LLM 설명 참고)."""
+    conf = conf_doc.classify(question_text(s))
     return {**_classify_intent(s), **conf}
 
 
 def _classify_intent(s: HRState) -> HRState:
-    """규칙 분류만 써요. LLM은 도구 호출 뒤 답변 생성(generate)에서만 불러요."""
     if s.get("role") == "hr_admin":                # 인사팀은 전용 분류 (역할은 토큰에서)
         return classify_admin_state(s)
-    return _classify_rule(s)
+    rule = _classify_rule(s)
+    # ② 규칙이 이미 민감·거절로 정했거나 질문 내용이 없으면 LLM을 부르지 않아요
+    if (not llm_classify.enabled() or rule["intent"] in {"sensitive", "refuse"}
+            or not has_question_content(s["masked_question"])):
+        return rule
+    result = llm_classify.classify(question_text(s), date.today())
+    if result is None:
+        log.warning("분류 보조 LLM 호출에 실패해 규칙 결과만 씁니다")
+        return rule
+    if result["intent"] in {"sensitive", "refuse"}:   # 규칙이 놓친 민감·타인 조회 보완
+        return {"intent": result["intent"]}
+    return {**rule, "classifier_calc": result["calc"]}   # 의도·조회 도구는 규칙 그대로
 
 
 # ───────────── lookup: 본인 조회 ─────────────
@@ -331,9 +343,104 @@ def _hours(question: str) -> tuple[float, float, float] | None:
         return None
 
 
+def _calc_from_classifier(calc: dict, chunks: list, question: str) -> dict | None:
+    kind = calc["type"]
+    slots = calc["slots"]
+    if kind == "business_trip":
+        if not {"nights", "days", "region"} <= set(slots):
+            return None
+        nights, days = slots["nights"], slots["days"]
+        for chunk in chunks:
+            rates = chunk.get("rates")
+            if rates:
+                daily_allowance = rates["daily_allowance"] * days
+                meal_allowance = rates["meal_allowance"] * days
+                daily_total = daily_allowance + meal_allowance
+                lodging_total = rates["lodging_cap"] * nights
+                return {
+                    "daily_allowance": daily_allowance,
+                    "meal_allowance": meal_allowance,
+                    "daily_allowance_and_meal": daily_total,
+                    "lodging_cap": lodging_total,
+                    "maximum_total": daily_total + lodging_total,
+                }
+        return None
+
+    if kind == "annual_leave" and "service_years" in slots:
+        return {
+            "입력 부족": {
+                "필요한 값": "입사일(연·월·일)",
+                "안내": "연차는 회계연도 기준이라 입사 연도와 날짜가 있어야 계산할 수 있어요.",
+            }
+        }
+
+    rules = calc_rules.load_rules(config.RULES_PATH)
+    if rules is None:
+        return None
+    if kind == "annual_leave":
+        hire_date = slots.get("hire_date")
+        as_of = slots.get("as_of")
+        if not hire_date or not as_of:
+            return None
+        return calc_rules.annual_leave(hire_date, as_of, rules)
+    if kind == "overtime":
+        if (
+            "ordinary_wage" in slots
+            and "통상임금" not in question
+            and any(label in question for label in ("기본급", "월급"))
+        ):
+            slots = dict(slots)
+            slots["base_pay"] = slots.pop("ordinary_wage")
+        hour_slots = ("overtime_hours", "night_hours", "holiday_hours")
+        if "ordinary_wage" in slots:
+            if not any(key in slots for key in hour_slots):
+                return None
+            return calc_rules.overtime_pay(
+                slots["ordinary_wage"],
+                slots.get("overtime_hours", 0),
+                slots.get("night_hours", 0),
+                slots.get("holiday_hours", 0),
+                rules,
+            )
+        if "base_pay" in slots and any(key in slots for key in hour_slots):
+            excess = calc_rules.holiday_hours_excess(
+                slots.get("holiday_hours", 0), rules
+            )
+            if excess is not None:
+                return excess
+            ordinary = rules.get("ordinary_wage", {})
+            overtime = rules.get("overtime", {})
+            if (
+                isinstance(ordinary, dict)
+                and isinstance(ordinary.get("_status"), str)
+                and isinstance(overtime, dict)
+                and "monthly_hours" in overtime
+            ):
+                return {
+                    "입력 부족": {
+                        "필요한 값": "통상임금",
+                        "통상임금 구성": ordinary["_status"],
+                        "시간급 계산식": (
+                            f"통상임금 ÷ 월 소정근로시간 ({overtime['monthly_hours']}시간)"
+                        ),
+                    }
+                }
+        return None
+    if kind == "family_allowance":
+        if not {"grade", "family"} <= set(slots):
+            return None
+        return calc_rules.family_allowance(slots["grade"], slots["family"], rules)
+    return None
+
+
 def calc(s: HRState) -> HRState:
     """출장비: 근거에 단가(rates)가 있으면 박·일수로 계산. TODO: 기준표(rules.json) 기반 계산 함수로 확장 (수당, 경조휴가 등)"""
     question = question_text(s)
+    classifier_calc = s.get("classifier_calc")
+    if config.CALC_TOOLS and isinstance(classifier_calc, dict):
+        result = _calc_from_classifier(classifier_calc, s.get("chunks", []), question)
+        if result is not None:
+            return {"calc": result}
     trip = re.search(r"(\d+)\s*박\s*(\d+)\s*일", question)
     if "출장" in question and trip:
         nights, days = (int(value) for value in trip.groups())

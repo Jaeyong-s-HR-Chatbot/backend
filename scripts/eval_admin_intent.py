@@ -2,8 +2,9 @@
 
     python scripts/eval_admin_intent.py
     python scripts/eval_admin_intent.py --split test --save
+    python scripts/eval_admin_intent.py --llm     # 규칙 vs 규칙+③ 기간·기준값 LLM (.env의 LLM)
 
-의도 분류는 규칙만 써요 (LLM은 도구 호출 뒤 답변 생성에서만 씀).
+의도·집계 도구는 규칙이 정하고, --llm이면 도구가 정해진 문항에서 기간·기준값만 분류 보조 LLM으로 다시 뽑아요.
 - 정답 data와 both는 같은 정답으로 봐요 (backend는 집계 도구를 쓰면 항상 규정도 같이 찾음)
 - 질문 내용이 없으면 파이프라인처럼 no_question으로 봐요
 - 정답이 refuse인 문항(A-L03·L04 특정인 대화 기록·민감 상담자 조회)도 채점해요. 117번(일반 직원 계정)은 role이 employee라 빠져요
@@ -19,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app import admin_tools  # noqa: E402
+from app import admin_tools, config  # noqa: E402
 from app.graph import nodes  # noqa: E402
 from app.graph.admin_classify import classify_admin_state  # noqa: E402
 
@@ -45,12 +46,12 @@ def _norm(v):
     return str(v)
 
 
-def predict(question: str, today: date) -> dict:
+def predict(question: str, today: date, use_llm: bool = False) -> dict:
     s = {"employee_id": LOGIN, "role": "hr_admin", "question": question}
     s.update(nodes.guard(s))
     if not nodes.has_question_content(s["masked_question"]):
         return {"intent": "no_question", "admin_tool": None, "admin_params": {}}
-    r = classify_admin_state(s, today)
+    r = classify_admin_state(s, today, use_llm=use_llm)
     return {"intent": r["intent"], "admin_tool": r.get("admin_tool"), "admin_params": r.get("admin_params") or {},
             "sensitive_topic": r.get("sensitive_topic")}
 
@@ -93,7 +94,7 @@ def summarize(rows: list[dict]) -> dict:
     }
 
 
-def run(split: str = "all", items=None, as_of: date | None = None) -> dict:
+def run(split: str = "all", items=None, as_of: date | None = None, use_llm: bool = False) -> dict:
     """채점 결과: {"summary": {...}, "by_split": {...}, "rows": [...]}"""
     if items is None:
         items, golden_as_of = load_items()
@@ -102,7 +103,7 @@ def run(split: str = "all", items=None, as_of: date | None = None) -> dict:
     for it in (i for i in items if split == "all" or i["split"] == split):
         t = perf_counter()
         try:
-            p = predict(it["question"], as_of)
+            p = predict(it["question"], as_of, use_llm)
         except Exception as e:   # 한 문항 오류로 전체가 멈추지 않게
             p = {"intent": f"error:{type(e).__name__}", "admin_tool": None, "admin_params": {}}
         ms = (perf_counter() - t) * 1000
@@ -151,10 +152,22 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--split", choices=("all", "dev", "test", "uncertain"), default="all")
+    ap.add_argument("--llm", action="store_true", help="규칙 vs 규칙+기간·기준값 LLM 비교")
     ap.add_argument("--save", action="store_true", help="eval/golden/runs/에 결과 저장")
     args = ap.parse_args()
     result = run(args.split)
     print(markdown(result))
+    if args.llm:
+        if config.USE_FAKE_LLM:
+            raise SystemExit("--llm은 .env에 LLM_BASE_URL이 있어야 해요")
+        llm = run(args.split, use_llm=True)
+        print("\n## 규칙+LLM (기간·기준값)\n")
+        print(markdown(llm))
+        fixed = [x["id"] for x, y in zip(result["rows"], llm["rows"]) if x["params_ok"] is False and y["params_ok"]]
+        broke = [x["id"] for x, y in zip(result["rows"], llm["rows"]) if x["params_ok"] and y["params_ok"] is False]
+        print(f"\nLLM이 고친 인자 {len(fixed)}개: {', '.join(fixed)}")
+        print(f"LLM이 새로 틀린 인자 {len(broke)}개: {', '.join(broke)}")
+        result = llm
     wrong = [x for x in result["rows"] if x["scored"] and (not x["intent_ok"] or x["tool_ok"] is False)]
     print(f"\n틀린 문항 {len(wrong)}개")
     for x in wrong[:40]:
