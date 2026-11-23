@@ -105,13 +105,37 @@ def _admin_state(q):
     return s
 
 
-def test_admin_llm_overrides_params_but_not_tool(monkeypatch, llm_on):
+def test_admin_llm_fills_only_missing_params(monkeypatch, llm_on):
+    """규칙이 비워 둔 인자(연도)만 LLM 값으로 채우고, 모르는 인자는 버림"""
+    q = "연말에 소멸될 연차가 많은 직원 TOP 20"
+    rule = classify_admin_state(_admin_state(q), TODAY, use_llm=False)
+    assert rule["admin_params"].get("year") is None
     calls = []
-    monkeypatch.setattr(llm_classify, "chat_json",
-                        _fake_chat({"params": {"year": 2026, "below_rate": 0.3, "unknown": 1}}, calls))
-    r = classify_admin_state(_admin_state("올해 연차 사용률 30% 안 되는 부서 어디야?"), TODAY)
-    assert r["admin_tool"] == "dept_leave_usage" and calls
-    assert r["admin_params"]["below_rate"] == 0.3 and "unknown" not in r["admin_params"]
+    monkeypatch.setattr(llm_classify, "chat_json", _fake_chat({"params": {"year": 2026, "limit": 5, "unknown": 1}}, calls))
+    r = classify_admin_state(_admin_state(q), TODAY)
+    assert calls and r["admin_tool"] == rule["admin_tool"]
+    assert r["admin_params"]["year"] == 2026                       # 빈 값 → 채움
+    assert r["admin_params"]["limit"] == rule["admin_params"]["limit"]   # 규칙 값 → 유지
+    assert "unknown" not in r["admin_params"]
+
+
+@pytest.mark.parametrize("q, llm_params, key", [
+    ("생리휴가·보건휴가 사용 현황 부서별로", {"leave_type": "생리휴가"}, "leave_type"),   # A-014
+    ("출퇴근 기록 빠진 직원", {"month": "2026-11"}, "month"),                          # A-022
+])
+def test_admin_llm_does_not_overwrite_rule_values(monkeypatch, llm_on, q, llm_params, key):
+    """골든셋 Colab 27B 평가에서 LLM이 맞던 규칙 값을 덮어써 틀렸던 문항"""
+    rule = classify_admin_state(_admin_state(q), TODAY, use_llm=False)
+    assert rule["admin_params"].get(key) is not None
+    monkeypatch.setattr(llm_classify, "chat_json", _fake_chat({"params": llm_params}, []))
+    assert classify_admin_state(_admin_state(q), TODAY)["admin_params"] == rule["admin_params"]
+
+
+def test_admin_prompt_shows_list_params():
+    from app.graph.admin_params_llm import _signature
+    assert "leave_type:str 또는 [str]" in _signature("leave_by_dept_period")
+    assert "years:[int]" in _signature("service_anniversary")
+    assert "start:date" in _signature("leave_by_dept_period")
 
 
 def test_admin_llm_bad_values_keep_rule_values(monkeypatch, llm_on):
@@ -130,3 +154,7 @@ def test_admin_params_validation():
     assert admin_params_llm.validate_params("leave_by_dept_period",
                                             {"start": "2026-12-01", "end": "2026-01-01"}) == {}
     assert admin_params_llm.validate_params("payroll_dept_totals", {"pay_month": "2026-10"}) == {"pay_month": "2026-10"}
+    assert admin_params_llm.validate_params("leave_by_dept_period", {"leave_type": ["생리휴가", " 보건휴가 ", 3]}) \
+        == {"leave_type": ["생리휴가", "보건휴가"]}
+    assert admin_params_llm.validate_params("service_anniversary", {"years": [10, "20", -1, "x"]}) == {"years": [10, 20]}
+    assert admin_params_llm.validate_params("service_anniversary", {"years": 10}) == {}   # 목록만 받는 인자

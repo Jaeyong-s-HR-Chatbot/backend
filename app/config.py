@@ -46,7 +46,7 @@ LLM_MAX_TOKENS = int(_get("LLM_MAX_TOKENS", "600"))
 
 # 의도 분류 보조 LLM. 분류는 항상 규칙이 먼저 하고, 규칙이 약한 세 군데에만 LLM을 물어요.
 #   ① 보안문서 판단 (주제어가 있는 질문만, 로컬 LLM만)  ② 임직원: 놓친 민감·타인 조회 보완 + 계산 값
-#   ③ 인사팀: 규칙이 고른 집계 도구의 기간·기준값
+#   ③ 인사팀: 규칙이 고른 집계 도구의 기간·기준값 중 규칙이 못 뽑은 것
 # 의도·조회 도구·집계 도구는 규칙 결과를 그대로 써요. 실제 LLM(LLM_BASE_URL)이 없거나 off면 규칙만, 실패해도 규칙 결과.
 CLASSIFY_LLM = _get("CLASSIFY_LLM", "on").lower() in {"1", "true", "yes", "on"}
 CLASSIFY_MODEL = _get("CLASSIFY_MODEL", LLM_MODEL) or LLM_MODEL

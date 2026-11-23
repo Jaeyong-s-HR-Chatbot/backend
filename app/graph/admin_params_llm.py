@@ -1,12 +1,14 @@
 """③ 인사팀 분류 보조 LLM: 규칙이 고른 집계 도구의 기간·기준값만 다시 뽑아요.
 
 도구 선택은 규칙이 해요 (골든셋에서 규칙 도구 정확도가 LLM보다 높았음). 규칙의 값 추출은 표현이 다르면 놓쳐서
-("요즘", "작년 하반기", "20명만") 그 도구의 인자만 LLM에 묻고, 형식을 다시 확인해 맞는 값만 규칙 값 위에 덮어써요.
+("요즘", "작년 하반기", "20명만") 그 도구의 인자만 LLM에 묻고, 형식을 다시 확인해요.
+규칙이 비워 둔(None·없음) 인자만 LLM 값으로 채우고, 규칙이 뽑은 값은 덮어쓰지 않아요 (admin_classify.classify_admin_state).
 요청·응답이 잘못되면 None을 돌려줘서 규칙 값을 그대로 쓰게 해요.
 """
 import inspect
 import json
 import logging
+import re
 from datetime import date
 
 import httpx
@@ -35,13 +37,25 @@ _EXAMPLES = [
 ]
 
 
-def _param_kind(fn, name: str) -> str:
-    """인자 종류: date / int / float / str (타입 표시로 판단)"""
+_KINDS = ("date", "float", "int", "str")
+
+
+def _param_kinds(fn, name: str) -> tuple[str | None, str | None]:
+    """인자 형식 (값 하나일 때 종류, 목록일 때 항목 종류). 예: str | list[str] → ("str", "str"), list[int] → (None, "int")"""
     annotation = str(inspect.signature(fn).parameters[name].annotation)
-    for kind in ("date", "float", "int", "str"):
-        if kind in annotation:
-            return kind
-    return "str"
+    listed = re.search(r"list\[(\w+)", annotation)
+    item = next((k for k in _KINDS if listed and k in listed.group(1)), None)
+    rest = re.sub(r"list\[[^\]]*\]", "", annotation)
+    single = next((k for k in _KINDS if k in rest), None)
+    if single is None and item is None:
+        single = "str"
+    return single, item
+
+
+def _param_kind(fn, name: str) -> str:
+    """프롬프트에 적는 인자 형식: date / int / float / str, 목록이면 [str], 둘 다 되면 'str 또는 [str]'"""
+    single, item = _param_kinds(fn, name)
+    return " 또는 ".join(k for k in (single, f"[{item}]" if item else None) if k)
 
 
 def _signature(name: str) -> str:
@@ -61,6 +75,7 @@ def _system_prompt(tool: str, today: date) -> str:
 도구: {_signature(tool)}
 규칙:
 - 질문에 나타난 값만 넣습니다. 질문에 없는 인자는 넣지 않습니다 (도구 기본값을 씀).
+- 형식이 [종류]인 인자는 목록입니다. 질문에 여러 개가 나오면 모두 넣습니다 ("생리휴가·보건휴가" → ["생리휴가", "보건휴가"]).
 - 날짜는 YYYY-MM-DD, 월은 YYYY-MM, 비율은 0~1 소수(30% → 0.3)로 씁니다.
 - 상대 기간(이번 달, 지난주, 올해, 작년 하반기, 최근 3개월, 요즘)은 오늘 기준으로 계산합니다.
 예시 (예시의 오늘은 {_EXAMPLE_TODAY}):
@@ -99,10 +114,13 @@ def validate_params(tool: str, params) -> dict:
         if key in ("month", "pay_month"):          # "YYYY-MM" 문자열 인자
             ok = isinstance(value, str) and len(value) == 7 and value[4] == "-"
             coerced = value if ok and value[:4].isdigit() and value[5:].isdigit() else None
-        elif key == "leave_type" and isinstance(value, list):   # 휴가 종류 여러 개 ("생리휴가·보건휴가")
-            coerced = [v.strip() for v in value if isinstance(v, str) and v.strip()] or None
         else:
-            coerced = _coerce(_param_kind(fn, key), value)
+            single, item = _param_kinds(fn, key)
+            if isinstance(value, list):              # 목록 인자 (휴가 종류 여러 개, 근속 연수 여러 개)
+                items = [_coerce(item, v) for v in value] if item else []
+                coerced = [v for v in items if v is not None] or None
+            else:
+                coerced = _coerce(single, value) if single else None
         if coerced is None:
             log.warning("인사팀 인자 LLM 응답에서 형식이 맞지 않는 인자를 제외했습니다")
             continue

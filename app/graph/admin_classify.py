@@ -3,7 +3,7 @@
 임직원 분류(nodes._classify_rule)와 같은 순서로 하되 두 군데가 달라요.
 1. 민감 단어 → 종료하지 않고 sensitive_topic 표시만 붙임 (검색·답변은 하고 로그만 [민감 주제 문의])
 2. 다른 직원 언급 → 인사팀은 업무상 볼 수 있으니 거절하지 않음
-의도·집계 도구는 규칙으로 정하고, 도구의 기간·기준값만 분류 보조 LLM으로 다시 뽑아요 (admin_params_llm).
+의도·집계 도구는 규칙으로 정하고, 규칙이 못 뽑은 기간·기준값만 분류 보조 LLM으로 채워요 (admin_params_llm).
 
 의도
 - rule         : 규정·절차만 → 검색 → 답변 (징계·고충도 여기로)
@@ -338,7 +338,7 @@ def classify_admin_state(s: dict, today: date | None = None, use_llm: bool | Non
     """인사팀 분류 진입점 (nodes.classify가 hr_admin일 때 불러요).
 
     의도·집계 도구는 규칙이 정하고, 도구가 정해지면 ③ 그 도구의 기간·기준값만 분류 보조 LLM에 다시 물어
-    맞는 형식의 값만 규칙 값 위에 덮어써요 (실패하면 규칙 값). today·use_llm은 평가에서만 넘겨요."""
+    규칙이 비워 둔 인자만 형식이 맞는 LLM 값으로 채워요 (실패하면 규칙 값). today·use_llm은 평가에서만 넘겨요."""
     from . import admin_params_llm, llm_classify   # 순환 import 방지
     from .nodes import question_text
 
@@ -348,6 +348,10 @@ def classify_admin_state(s: dict, today: date | None = None, use_llm: bool | Non
     use_llm = llm_classify.enabled() if use_llm is None else use_llm
     if use_llm and result.get("admin_tool"):
         params = admin_params_llm.extract(question, result["admin_tool"], today)
-        if params is not None:
-            result["admin_params"] = {**result.get("admin_params", {}), **params}
+        if params is not None:   # 규칙이 비워 둔 인자만 채움 (규칙 값을 덮어쓰면 맞던 값이 틀어졌음: 휴가 종류 목록, 기본 월)
+            merged = dict(result.get("admin_params", {}))
+            for key, value in params.items():
+                if merged.get(key) is None:
+                    merged[key] = value
+            result["admin_params"] = merged
     return result
