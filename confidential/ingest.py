@@ -2,13 +2,14 @@
 import argparse
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import psycopg
 from psycopg.types.json import Jsonb
 
 from app import config
-from . import conf_build, conf_mask, ner_model
+from . import conf_build, conf_mask, embedding, ner_model
 
 HERE = Path(__file__).parent
 
@@ -38,7 +39,8 @@ def prepare_document(pdf_path, meta, model, counts):
     if not pdf_path.is_file():
         raise FileNotFoundError("지정한 PDF를 찾을 수 없습니다")
     doc = dict(meta, file=pdf_path.name)
-    chunks = conf_build.build_doc(doc, pdf_path.parent)
+    parse_doc = dict(doc, name=doc.get("_parse_name", doc["name"]))
+    chunks = conf_build.build_doc(parse_doc, pdf_path.parent)
     if not chunks:
         raise ValueError("PDF에서 조각을 찾지 못해 적재를 중단합니다")
     tok, ner = model
@@ -46,31 +48,39 @@ def prepare_document(pdf_path, meta, model, counts):
     return doc, pairs
 
 
-def write_document(conn, meta, pairs):
+def upsert_document(conn, meta, status, chunk_count):
+    upload = meta["_upload"]
+    return conn.execute(
+        """INSERT INTO conf.documents
+        (doc_id, title, doc_kind, form, category, level, allowed_roles, subject_emp_id,
+         participants, pair_doc_id, issued_at, owner_dept, doc_no, confidential,
+         source_file, status, chunk_count, file_name, file_size, uploaded_at, uploaded_by)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (doc_id) DO UPDATE SET
+          title=EXCLUDED.title, doc_kind=EXCLUDED.doc_kind, form=EXCLUDED.form,
+          category=EXCLUDED.category, level=EXCLUDED.level, allowed_roles=EXCLUDED.allowed_roles,
+          subject_emp_id=EXCLUDED.subject_emp_id, participants=EXCLUDED.participants,
+          pair_doc_id=EXCLUDED.pair_doc_id, issued_at=EXCLUDED.issued_at,
+          owner_dept=EXCLUDED.owner_dept, doc_no=EXCLUDED.doc_no,
+          confidential=EXCLUDED.confidential, source_file=EXCLUDED.source_file,
+          status=EXCLUDED.status, chunk_count=EXCLUDED.chunk_count,
+          file_name=EXCLUDED.file_name, file_size=EXCLUDED.file_size,
+          uploaded_at=EXCLUDED.uploaded_at, uploaded_by=EXCLUDED.uploaded_by""",
+        (meta["id"], meta["name"], meta["doc_kind"], meta["form"], meta["category"],
+         meta["level"], meta.get("allowed_roles", []), meta.get("subject"),
+         Jsonb(meta.get("participants", [])), meta.get("pair"), meta.get("date"),
+         meta.get("owner_dept"), meta.get("doc_no"), meta.get("confidential", True),
+         meta["file"], status, chunk_count, upload["file_name"], upload["file_size"],
+         upload["uploaded_at"], upload["uploaded_by"]),
+    )
+
+
+def write_document(conn, meta, pairs, embeddings=None):
     with conn.transaction():
-        conn.execute(
-            """INSERT INTO conf.documents
-            (doc_id, title, doc_kind, form, category, level, allowed_roles, subject_emp_id,
-             participants, pair_doc_id, issued_at, owner_dept, doc_no, confidential,
-             source_file, status, chunk_count)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'processing', %s)
-            ON CONFLICT (doc_id) DO UPDATE SET
-              title=EXCLUDED.title, doc_kind=EXCLUDED.doc_kind, form=EXCLUDED.form,
-              category=EXCLUDED.category, level=EXCLUDED.level, allowed_roles=EXCLUDED.allowed_roles,
-              subject_emp_id=EXCLUDED.subject_emp_id, participants=EXCLUDED.participants,
-              pair_doc_id=EXCLUDED.pair_doc_id, issued_at=EXCLUDED.issued_at,
-              owner_dept=EXCLUDED.owner_dept, doc_no=EXCLUDED.doc_no,
-              confidential=EXCLUDED.confidential, source_file=EXCLUDED.source_file,
-              status=EXCLUDED.status, chunk_count=EXCLUDED.chunk_count""",
-            (meta["id"], meta["name"], meta["doc_kind"], meta["form"], meta["category"],
-             meta["level"], meta.get("allowed_roles", []), meta.get("subject"),
-             Jsonb(meta.get("participants", [])), meta.get("pair"), meta.get("date"),
-             meta.get("owner_dept"), meta.get("doc_no"), meta.get("confidential", True),
-             meta["file"], len(pairs)),
-        )
+        upsert_document(conn, meta, "processing", len(pairs))
         conn.execute("DELETE FROM conf.chunks_masked WHERE doc_id = %s", (meta["id"],))
         conn.execute("DELETE FROM conf.segments WHERE doc_id = %s", (meta["id"],))
-        for chunk, masked in pairs:
+        for index, (chunk, masked) in enumerate(pairs):
             seq = int(chunk["chunk_id"].rsplit("-", 1)[1])
             conn.execute(
                 """INSERT INTO conf.segments
@@ -86,10 +96,11 @@ def write_document(conn, meta, pairs):
                 """INSERT INTO conf.chunks_masked
                 (chunk_id, doc_id, seq, chunk_type, article, speaker_masked, masked_text,
                  level, sen, allowed_roles, embedding, tsv)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, to_tsvector('simple', %s))""",
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, to_tsvector('simple', %s))""",
                 (chunk["chunk_id"], meta["id"], seq, chunk["chunk_type"], chunk["article"],
                  masked.get("speaker_masked"), masked["masked"], meta["level"], masked["sen"],
-                 meta.get("allowed_roles", []), masked["masked"]),
+                 meta.get("allowed_roles", []),
+                 embedding.literal(embeddings[index]) if embeddings is not None else None, masked["masked"]),
             )
         conn.execute("UPDATE conf.documents SET status = 'ready' WHERE doc_id = %s", (meta["id"],))
 
@@ -99,19 +110,29 @@ def ingest_document(pdf_path, meta, *, model=None, counts=None, conn=None, dry_r
     counts = load_counts() if counts is None else counts
     model = ner_model.load() if model is None else model
     doc, pairs = prepare_document(pdf_path, meta, model, counts)
+    doc["file"] = meta["file"]
+    if "_upload" not in doc:
+        doc["_upload"] = {
+            "file_name": Path(pdf_path).name,
+            "file_size": Path(pdf_path).stat().st_size,
+            "uploaded_at": datetime.now(timezone.utc),
+            "uploaded_by": "스크립트 적재",
+        }
     if dry_run:
         conf_build.WORK_DIR.mkdir(parents=True, exist_ok=True)
         path = conf_build.WORK_DIR / (doc["id"] + ".jsonl")
         with path.open("w", encoding="utf-8") as f:
             for chunk, masked in pairs:
                 f.write(json.dumps({"segment": chunk, "masked": masked}, ensure_ascii=False) + "\n")
-    elif conn is not None:
-        write_document(conn, doc, pairs)
     else:
-        if not config.HRDB_URL:
-            raise RuntimeError("DB 적재에 HRDB_URL이 필요합니다")
-        with psycopg.connect(config.HRDB_URL, connect_timeout=5) as connection:
-            write_document(connection, doc, pairs)
+        embeddings = embedding.encode([masked["masked"] for _, masked in pairs])
+        if conn is not None:
+            write_document(conn, doc, pairs, embeddings)
+        else:
+            if not config.HRDB_URL:
+                raise RuntimeError("DB 적재에 HRDB_URL이 필요합니다")
+            with psycopg.connect(config.HRDB_URL, connect_timeout=5) as connection:
+                write_document(connection, doc, pairs, embeddings)
     return {
         "doc_id": doc["id"],
         "chunks": len(pairs),

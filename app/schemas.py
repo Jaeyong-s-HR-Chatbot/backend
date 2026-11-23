@@ -39,6 +39,13 @@ class Citation(BaseModel):
     revised: str | None = None
 
 
+class DocRef(BaseModel):
+    doc_id: str
+    title: str
+    confidential: bool
+    view: Literal["original", "redacted"]
+
+
 class ChatResponse(BaseModel):
     answer: str
     citations: list[Citation] = []
@@ -46,3 +53,4 @@ class ChatResponse(BaseModel):
     kind: Literal["answer", "refused", "sensitive"] = "answer"
     thread_id: str | None = None
     pii_notice: str | None = None
+    documents: list[DocRef] = Field(default_factory=list)

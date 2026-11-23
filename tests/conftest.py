@@ -12,7 +12,7 @@ import pytest
 
 HR_CSV = Path(__file__).resolve().parents[2] / "DB" / "data" / "hr"
 HR_TABLES = ["employees", "departments", "leave_balance", "leave_history", "requests", "absence_history",
-             "hr_history", "training", "payroll", "welfare_points"]
+             "hr_history", "training", "payroll", "welfare_points", "family", "business_trips", "audit_log"]
 _INT = re.compile(r"-?\d+")
 _FLOAT = re.compile(r"-?\d+\.\d+")
 
@@ -55,3 +55,11 @@ def sqlite_hr_db(hr_sqlite, monkeypatch):
         return [dict(r) for r in hr_sqlite.execute(sql.replace("%s", "?"), params).fetchall()]
     monkeypatch.setattr(db, "fetch_all", fetch_all)
     return hr_sqlite
+
+
+@pytest.fixture(autouse=True)
+def no_classify_llm(monkeypatch):
+    """테스트는 기본으로 분류 보조 LLM을 끄고 규칙만 써요 (.env에 실제 LLM 주소가 있어도 네트워크로 안 나감).
+    분류 LLM을 시험하는 테스트는 config.CLASSIFY_LLM·USE_FAKE_LLM을 직접 켜고 요청 함수를 가짜로 바꿔요."""
+    from app import config
+    monkeypatch.setattr(config, "CLASSIFY_LLM", False)

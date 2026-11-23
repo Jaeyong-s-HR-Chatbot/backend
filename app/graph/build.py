@@ -20,6 +20,7 @@ guard → classify ─┬─ rule ───────────────�
 from time import perf_counter
 
 from . import nodes as n
+from . import conf_chat
 from .state import HRState
 
 
@@ -36,6 +37,10 @@ def run_pipeline(employee_id: str, role: str, question: str, own_name: str = "")
 
     if s["intent"] == "sensitive":
         s |= n.sensitive(s)
+    elif s.get("refuse_reason") == "chat_log":
+        s |= n.refuse(s)
+    elif s.get("conf_doc"):
+        s |= conf_chat.answer(s)
     elif s["intent"] == "refuse":
         s |= n.refuse(s)
     elif not n.has_question_content(s["masked_question"]):

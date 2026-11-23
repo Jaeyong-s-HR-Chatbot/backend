@@ -214,3 +214,96 @@ def test_greeting_and_intro_have_no_question(q):
     from app.graph.nodes import has_question_content
     assert not has_question_content(q)
     assert has_question_content("안녕하세요. 연차 사용률 낮은 부서 알려줘")
+
+
+# ───────────── 집계 도구 28개: 질문별 도구 선택 (관리자 골든셋 문장) ─────────────
+@pytest.mark.parametrize("q, tool", [
+    ("올해 미사용 연차수당 예상 총액 얼마야?", "unused_leave_pay_estimate"),
+    ("입사 1년 안 된 직원들 월 단위 연차 제대로 생기고 있어?", "new_hire_monthly_leave"),
+    ("병가 연간 한도 넘긴 직원 있어?", "sick_leave_over_limit"),
+    ("장기재직휴가 대상인데 아직 안 쓴 사람", "long_service_leave_unused"),
+    ("야간근무 많은 직원 특수건강진단 대상자 뽑아줘", "night_work_heavy"),
+    ("육아휴직 쓸 수 있는데 안 쓴 직원(만 8세 이하 자녀)", "childcare_leave_eligible_unused"),
+    ("임금피크제 적용 대상자랑 몇 년차인지", "wage_peak_list"),
+    ("퇴직 예정자 퇴직금 예상액", "severance_estimate"),
+    ("명예퇴직 신청 가능한 직원 몇 명이야?", "honorary_retirement_eligible"),
+    ("퇴직자 남은 연차 정산 금액", "retiree_leave_payout"),           # '연차+남은' 규칙(leave_remaining_list)보다 먼저
+    ("출산 예정인 직원 누구야?", "expected_births"),
+    ("이번 달 출산축하금 지급 대상", "birth_bonus_targets"),
+    ("올해 승진 소요 최저연수 채운 사람", "promotion_min_years_met"),
+    ("4급 시험승진 응시 대상자", "exam_promotion_4_candidates"),
+    ("한 부서에 오래 있어서 순환전보 대상인 사람", "long_stay_same_dept"),
+    ("전보제한 기간 안 지나서 못 옮기는 사람", "transfer_restricted"),
+    ("올해 교육시간 제일 적은 직원", "training_hours_lowest"),
+    ("가족수당 받는데 자녀가 기준 나이 넘은 사람", "family_allowance_overage"),
+    ("다음 달 장기근속수당 구간 바뀌는 직원", "long_service_bracket_change"),
+    ("올해 근속 10·20·30년 되는 직원", "service_anniversary"),
+    ("부부가 둘 다 직원인데 가족수당 둘 다 받는 경우 있어?", "couple_family_allowance"),
+    ("같은 경조사로 경조금이 두 번 나간 건 있어?", "duplicate_condolence_payments"),
+    ("올해 중간에 입사·복직한 사람 복지포인트 제대로 월할됐어?", "welfare_points_proration_check"),   # 복지포인트 규칙보다 먼저
+    ("이번 달 출장 많은 부서랑 예상 출장비", "trips_by_dept"),
+    ("출장 끝났는데 아직 정산 안 된 건", "trips_unsettled"),
+    ("같은 지역 장기 출장자 일비 감액 제대로 됐어?", "long_trip_per_diem_check"),
+    ("누가 최근에 직원 개인정보 조회했어?", "audit_log_recent"),
+    ("이번 달 직원들이 챗봇에 많이 물어본 주제 TOP 5 보여줘", "chat_topic_stats"),
+    ("직원들은 챗봇한테 주로 뭐 물어봤어?", "chat_topic_stats"),
+])
+def test_new_admin_tools_picked(q, tool):
+    r = classify_admin(q, TODAY)
+    assert (r["intent"], r.get("admin_tool")) == ("both", tool)
+
+
+@pytest.mark.parametrize("q", [
+    "임금피크제 대상자 근로시간 줄여줘야 돼?",
+    "명예퇴직 신청 자격이 어떻게 돼?",
+    "전보제한 해제 신청 절차",
+    "박지현 과장이 챗봇한테 뭐 물어봤어?",         # 특정인 대화 조회는 주제 집계가 아님
+])
+def test_new_tools_do_not_steal_rule_questions(q):
+    assert classify_admin(q, TODAY).get("admin_tool") is None
+
+
+def test_new_tool_params_from_question():
+    r = classify_admin("이번 달 출장 많은 부서랑 예상 출장비", TODAY)
+    assert r["admin_params"] == {"month": "2026-11"}
+    r = classify_admin("다음 달 장기근속수당 구간 바뀌는 직원", TODAY)
+    assert r["admin_params"] == {"month": "2026-12"}
+    r = classify_admin("직원들이 챗봇에 많이 물어본 주제 TOP 3", TODAY)
+    assert r["admin_params"]["limit"] == 3
+    r = classify_admin("퇴직 예정자 퇴직금 예상액", TODAY)
+    assert r["admin_params"] == {"retire_from": TODAY, "retire_to": date(2027, 12, 31)}
+
+
+def test_new_tools_have_search_hint():
+    from app.admin_tools import ADMIN_TOOLS
+    from app.graph.admin_classify import SEARCH_HINTS
+    new = {"unused_leave_pay_estimate", "wage_peak_list", "trips_by_dept", "service_anniversary", "duplicate_condolence_payments"}
+    assert new <= set(SEARCH_HINTS) and set(SEARCH_HINTS) <= set(ADMIN_TOOLS)
+
+
+@pytest.mark.parametrize("q", [
+    "박지현 과장이 챗봇한테 뭐 물어봤어?",
+    "괴롭힘 상담한 직원 누구야?",
+    "괴롭힘 신고한 직원 명단 줘",
+    "E1412가 챗봇에 뭐 물어봤는지 보여줘",
+])
+def test_admin_chat_log_of_person_is_refused(q):
+    """대화 기록 정책: 특정인의 대화 내용·민감 상담자 신원은 인사팀에게도 거절"""
+    r = classify_admin(q, TODAY)
+    assert r["intent"] == "refuse" and r["refuse_reason"] == "chat_log"
+
+
+@pytest.mark.parametrize("q", [
+    "직원들은 챗봇한테 주로 뭐 물어봤어?",          # 주제 집계는 허용
+    "괴롭힘 신고는 누구한테 해야 돼?",              # 신고 절차
+    "성희롱 고충 처리 절차가 어떻게 돼?",
+    "김민수 과장 연차 며칠 남았어?",                # 다른 직원 업무 조회는 허용
+])
+def test_admin_non_chat_log_questions_not_refused(q):
+    assert classify_admin(q, TODAY)["intent"] != "refuse"
+
+
+def test_admin_chat_log_refuse_message():
+    from app.graph import nodes
+    msg = nodes.refuse({"intent": "refuse", "refuse_reason": "chat_log"})["answer"]
+    assert "대화 내용" in msg and "집계" in msg

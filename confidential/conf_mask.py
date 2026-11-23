@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from . import conf_build, ner_ext, ner_model, ner_rules_field, ner_rules_id
+from . import conf_build, mask_rules, ner_ext, ner_model, ner_rules_field, ner_rules_id
 
 HERE = Path(__file__).parent
 FORM_FIELDS = (ner_rules_field.NAME_FIELDS - {"참석"}) | ner_rules_field.ID_FIELDS  # "참석"은 직함과 이름이 섞인 문장이라 모델에 맡김
@@ -32,7 +32,7 @@ def mask_chunk(chunk, tok, model, counts):
     d = detect_text(chunk["text"], chunk, "text", tok, model, counts)
     if d["sen"]:
         masked = "[민감정보]"
-    elif chunk.get("chunk_type") == "항목" and chunk.get("article") == "징계대상자 소속":
+    elif mask_rules.is_subject_department(chunk):
         masked = "[부서]"
     else:
         masked = ner_ext.mask_all(chunk["text"], d["entities"], d["qi"])

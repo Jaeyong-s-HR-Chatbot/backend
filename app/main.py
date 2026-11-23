@@ -12,7 +12,7 @@ import uuid
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import config, roles
+from . import config, roles, conf_api
 from .auth import authenticate, create_token, current_user
 from . import db
 from .graph import retriever
@@ -25,9 +25,10 @@ app = FastAPI(title="누리철도 HR 챗봇 API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.CORS_ORIGINS,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
 )
+app.include_router(conf_api.router)
 
 
 @app.get("/health")
@@ -66,4 +67,5 @@ def chat(body: ChatRequest, user: Me = Depends(current_user)):
         kind=kind,
         thread_id=body.thread_id or uuid.uuid4().hex,
         pii_notice=None,   # 질문은 마스킹하지 않아요 (로그에 저장할 때만 가림). 화면 호환용으로 칸만 남김
+        documents=state.get("documents", []),
     )

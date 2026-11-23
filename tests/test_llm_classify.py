@@ -1,3 +1,4 @@
+"""② 임직원 분류 보조 LLM (규칙 분류 뒤 놓친 민감·타인 조회 보완 + 계산 값)"""
 import json
 from collections import Counter
 from datetime import date
@@ -6,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import config, tools
+from app import config
 from app.graph import llm_classify, nodes
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,8 +16,7 @@ DATA_PATH = ROOT / "eval" / "intent" / "intent_cases.jsonl"
 
 
 @pytest.fixture(autouse=True)
-def rule_mode(monkeypatch):
-    monkeypatch.setattr(config, "CLASSIFY_MODE", "rule")
+def base(monkeypatch):
     monkeypatch.setattr(config, "CALC_TOOLS", False)
     monkeypatch.setattr(config, "USE_DB", True)
 
@@ -36,103 +36,6 @@ def _response(intent="rule", tools_list=None, calc=None):
         },
         ensure_ascii=False,
     )
-
-
-def test_rule_mode_does_not_call_llm(monkeypatch):
-    monkeypatch.setattr(
-        llm_classify,
-        "classify",
-        lambda *args: pytest.fail("rule mode called the LLM"),
-    )
-
-    assert nodes.classify(_state("팀장에게 폭언을 들었어요")) == {"intent": "sensitive"}
-
-
-@pytest.mark.parametrize(
-    "question",
-    ["팀장에게 폭언을 들었어요", "제 사번은 E1584예요."],
-)
-def test_hybrid_short_circuits_rule_sensitive_and_no_question(question, monkeypatch):
-    monkeypatch.setattr(config, "CLASSIFY_MODE", "hybrid")
-    calls = []
-    monkeypatch.setattr(
-        llm_classify,
-        "classify",
-        lambda *args: calls.append(args) or {"intent": "rule", "tools": [], "calc": None},
-    )
-
-    result = nodes.classify(_state(question))
-
-    assert calls == []
-    assert result["intent"] == ("sensitive" if "폭언" in question else "rule")
-
-
-@pytest.mark.parametrize("intent", ["sensitive", "refuse"])
-def test_hybrid_accepts_llm_sensitive_classification(monkeypatch, intent):
-    monkeypatch.setattr(config, "CLASSIFY_MODE", "hybrid")
-    monkeypatch.setattr(
-        llm_classify,
-        "classify",
-        lambda *args: {"intent": intent, "tools": [], "calc": None},
-    )
-
-    assert nodes.classify(_state("광역시 출장비 기준을 알려 줘"))["intent"] == intent
-
-
-def test_hybrid_failure_falls_back_to_rule_and_warns(monkeypatch, caplog):
-    monkeypatch.setattr(config, "CLASSIFY_MODE", "hybrid")
-    monkeypatch.setattr(llm_classify, "classify", lambda *args: None)
-    caplog.set_level("WARNING", logger="hr_chat")
-
-    result = nodes.classify(_state("내 연차 잔여와 사용 기준을 같이 알려 줘"))
-
-    assert result["intent"] == "both"
-    assert "LLM 의도 분류에 실패해 규칙 결과로 대체합니다" in caplog.text
-
-
-def test_llm_mode_does_not_run_rules_before_success(monkeypatch):
-    monkeypatch.setattr(config, "CLASSIFY_MODE", "llm")
-    monkeypatch.setattr(
-        nodes,
-        "_classify_rule",
-        lambda state: pytest.fail("llm mode ran rules before a successful LLM call"),
-    )
-    monkeypatch.setattr(
-        llm_classify,
-        "classify",
-        lambda *args: {"intent": "lookup", "tools": ["profile"], "calc": None},
-    )
-
-    result = nodes.classify(_state("내 입사일 알려 줘"))
-
-    assert result["intent"] == "lookup"
-    assert result["classifier_tools"] == ["profile"]
-
-
-def test_llm_mode_falls_back_to_rules_on_failure(monkeypatch, caplog):
-    monkeypatch.setattr(config, "CLASSIFY_MODE", "llm")
-    monkeypatch.setattr(llm_classify, "classify", lambda *args: None)
-    caplog.set_level("WARNING", logger="hr_chat")
-
-    result = nodes.classify(_state("내 연차 잔여와 사용 기준을 같이 알려 줘"))
-
-    assert result["intent"] == "both"
-    assert "LLM 의도 분류에 실패해 규칙 결과로 대체합니다" in caplog.text
-
-
-def test_classifier_receives_original_question(monkeypatch):
-    monkeypatch.setattr(config, "CLASSIFY_MODE", "hybrid")
-    received = []
-    monkeypatch.setattr(
-        llm_classify,
-        "classify",
-        lambda question, today: received.append(question)
-        or {"intent": "rule", "tools": [], "calc": None},
-    )
-
-    nodes.classify(_state("제 번호 010-1234-5678인데 출장비 기준을 알려 줘"))
-
-    assert received and "010-1234-5678" in received[0]   # 질문은 마스킹하지 않아요
 
 
 def test_invalid_tool_names_are_dropped():
@@ -208,85 +111,6 @@ def test_service_years_requires_explicit_hire_date(monkeypatch):
         "필요한 값": "입사일(연·월·일)",
         "안내": "연차는 회계연도 기준이라 입사 연도와 날짜가 있어야 계산할 수 있어요.",
     }
-
-
-def test_llm_selected_tools_still_use_token_employee_id(monkeypatch):
-    captured = {}
-
-    def fake_run_lookups(emp_id, question, selected_tools=None):
-        captured.update(
-            emp_id=emp_id,
-            question=question,
-            selected_tools=selected_tools,
-        )
-        return {}, ["profile", "payroll"]
-
-    monkeypatch.setattr(tools, "run_lookups", fake_run_lookups)
-    result = nodes.lookup(
-        {
-            "employee_id": "E1584",
-            "masked_question": "급여 알려 줘",
-            "classifier_tools": ["profile", "payroll"],
-        }
-    )
-
-    assert captured == {
-        "emp_id": "E1584",
-        "question": "급여 알려 줘",
-        "selected_tools": ["profile", "payroll"],
-    }
-    assert result["tools_used"] == ["profile", "payroll"]
-
-
-def test_selected_lookup_tools_filter_keyword_matches(monkeypatch):
-    calls = []
-
-    def fake_profile(emp_id):
-        calls.append(("profile", emp_id))
-        return {"부서": "신호팀"}
-
-    def fake_payroll(emp_id):
-        calls.append(("payroll", emp_id))
-        return {"급여월": "2026-10"}
-
-    def fake_family(emp_id):
-        calls.append(("family", emp_id))
-        return {"가족": []}
-
-    monkeypatch.setattr(tools, "get_profile", fake_profile)
-    monkeypatch.setattr(
-        tools,
-        "TOOL_KEYWORDS",
-        [
-            (("급여",), "payroll", fake_payroll),
-            (("가족수당",), "family", fake_family),
-        ],
-    )
-
-    data, used = tools.run_lookups(
-        "E1584",
-        "급여와 가족수당",
-        selected_tools=["profile", "payroll"],
-    )
-
-    assert calls == [("profile", "E1584"), ("payroll", "E1584")]
-    assert used == ["profile", "payroll"]
-    assert "가족" not in data
-
-
-def test_fake_lookup_respects_selected_tools(monkeypatch):
-    monkeypatch.setattr(config, "USE_DB", False)
-
-    result = nodes.lookup(
-        {
-            "employee_id": "E1584",
-            "masked_question": "내 연차 알려 줘",
-            "classifier_tools": ["profile"],
-        }
-    )
-
-    assert set(result["lookup"]) == {"기본정보"}
-    assert result["tools_used"] == ["profile"]
 
 
 def test_ollama_request_uses_json_schema_and_limits(monkeypatch):
@@ -401,63 +225,61 @@ def test_few_shot_examples_are_dev_only_original_and_pair_disjoint_from_test():
     assert sum(example["calc"] is not None for example in examples) == 4
 
 
-@pytest.mark.parametrize(
-    "question",
-    ["팀장에게 폭언을 들었어요", "제 사번은 E1584예요."],
-)
-def test_assist_short_circuits_rule_sensitive_and_no_question(question, monkeypatch):
-    monkeypatch.setattr(config, "CLASSIFY_MODE", "assist")
+@pytest.fixture
+def llm_on(monkeypatch):
+    monkeypatch.setattr(config, "CLASSIFY_LLM", True)
+    monkeypatch.setattr(config, "USE_FAKE_LLM", False)
+
+
+def test_llm_off_does_not_call_llm(monkeypatch):
+    monkeypatch.setattr(llm_classify, "classify", lambda *a: pytest.fail("LLM called"))
+    assert nodes.classify(_state("내 연차 잔여와 사용 기준을 같이 알려 줘"))["intent"] == "both"
+
+
+def test_fake_llm_does_not_call_classifier(monkeypatch):
+    monkeypatch.setattr(config, "CLASSIFY_LLM", True)
+    monkeypatch.setattr(config, "USE_FAKE_LLM", True)
+    monkeypatch.setattr(llm_classify, "classify", lambda *a: pytest.fail("LLM called"))
+    nodes.classify(_state("내 연차 잔여와 사용 기준을 같이 알려 줘"))
+
+
+@pytest.mark.parametrize("question", ["팀장에게 폭언을 들었어요", "제 사번은 E1584예요."])
+def test_rule_sensitive_and_no_question_skip_llm(question, monkeypatch, llm_on):
     calls = []
-    monkeypatch.setattr(
-        llm_classify,
-        "classify",
-        lambda *args: calls.append(args) or {"intent": "rule", "tools": [], "calc": None},
-    )
-
+    monkeypatch.setattr(llm_classify, "classify",
+                        lambda *args: calls.append(args) or {"intent": "rule", "tools": [], "calc": None})
     result = nodes.classify(_state(question))
-
     assert calls == []
     assert result["intent"] == ("sensitive" if "폭언" in question else "rule")
 
 
 @pytest.mark.parametrize("intent", ["sensitive", "refuse"])
-def test_assist_accepts_llm_safety_classification(monkeypatch, intent):
-    monkeypatch.setattr(config, "CLASSIFY_MODE", "assist")
-    monkeypatch.setattr(
-        llm_classify,
-        "classify",
-        lambda *args: {"intent": intent, "tools": ["profile", "payroll"], "calc": None},
-    )
-
+def test_llm_adds_missed_sensitive_or_refuse(monkeypatch, llm_on, intent):
+    monkeypatch.setattr(llm_classify, "classify",
+                        lambda *args: {"intent": intent, "tools": ["profile", "payroll"], "calc": None})
     result = nodes.classify(_state("광역시 출장비 기준을 알려 줘"))
-
-    assert result["intent"] == intent
-    assert result["classifier_tools"] == []
-    assert result["classifier_calc"] is None
+    assert result["intent"] == intent and "classifier_calc" not in result
 
 
-def test_assist_keeps_rule_intent_and_keyword_tools_but_uses_llm_calc(monkeypatch):
-    monkeypatch.setattr(config, "CLASSIFY_MODE", "assist")
+def test_llm_keeps_rule_intent_but_uses_llm_calc(monkeypatch, llm_on):
     calc = {"type": "annual_leave", "slots": {"hire_date": "2023-01-01", "as_of": "2026-11-12"}}
-    monkeypatch.setattr(
-        llm_classify,
-        "classify",
-        lambda *args: {"intent": "rule", "tools": [], "calc": calc},
-    )
-
+    monkeypatch.setattr(llm_classify, "classify", lambda *args: {"intent": "rule", "tools": [], "calc": calc})
     result = nodes.classify(_state("내 연차 잔여와 사용 기준을 같이 알려 줘"))
-
-    assert result["intent"] == "both"           # LLM 이 rule 이라고 해도 규칙 결과를 유지
-    assert "classifier_tools" not in result      # 조회 도구는 키워드 규칙이 고름
+    assert result["intent"] == "both"           # LLM이 rule이라고 해도 규칙 결과를 유지
     assert result["classifier_calc"] == calc
 
 
-def test_assist_failure_falls_back_to_rule_and_warns(monkeypatch, caplog):
-    monkeypatch.setattr(config, "CLASSIFY_MODE", "assist")
+def test_llm_failure_falls_back_to_rule_and_warns(monkeypatch, caplog, llm_on):
     monkeypatch.setattr(llm_classify, "classify", lambda *args: None)
     caplog.set_level("WARNING", logger="hr_chat")
-
     result = nodes.classify(_state("내 연차 잔여와 사용 기준을 같이 알려 줘"))
-
     assert result == {"intent": "both"}
-    assert "LLM 의도 분류에 실패해 규칙 결과로 대체합니다" in caplog.text
+    assert "분류 보조 LLM 호출에 실패해 규칙 결과만 씁니다" in caplog.text
+
+
+def test_classifier_receives_original_question(monkeypatch, llm_on):
+    seen = []
+    monkeypatch.setattr(llm_classify, "classify",
+                        lambda q, today: seen.append(q) or {"intent": "rule", "tools": [], "calc": None})
+    nodes.classify(_state("제 전화번호 010-1234-5678인데 경조휴가 규정 알려줘"))
+    assert seen and "010-1234-5678" in seen[0]

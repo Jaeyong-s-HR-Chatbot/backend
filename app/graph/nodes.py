@@ -121,7 +121,7 @@ _HR_WORDS = [
     "사망", "부고", "이사", "이전비", "입학", "규정", "징계", "근무", "야근", "당직", "승진", "평가",
     "인사", "입사", "가족", "부양", "진단서", "결재", "승인", "소명", "정산", "통상", "시간외", "야간",
     "휴일", "사번", "직급", "직원", "직장", "회사", "팀장", "팀원", "동료", "상사", "관리자", "업무",
-    "대화방", "모욕", "고충", "신청",
+    "대화방", "모욕", "고충", "신청", "노사협의회",
 ]
 # 다른 조직의 제도를 묻는 질문 (우리 회사 규정으로 답할 수 없음)
 _OTHER_ORG = re.compile(r"공무원|공공기관|타사|다른\s*회사|남의\s*회사|대기업|삼성|현대|엘지|LG|SK|카카오|네이버")
@@ -175,11 +175,9 @@ def has_question_content(question: str) -> bool:
     return not _NO_QUESTION_CONTENT.fullmatch(_intent_question(question))
 
 
-def _classify_rule(s: HRState) -> HRState:
-    """직원(employee) 규칙 분류. 인사팀(hr_admin)은 classify()에서 admin_classify로 먼저 빠져요"""
+def _classify_signals(s: HRState) -> tuple[bool, bool, bool, bool]:
     q = s["masked_question"]
     intent_q = _intent_question(q)
-    other_id = s.get("has_other_emp_id", False) or "[사번]" in q
     has_read_tool = any(w in intent_q for w in _TOOL_WORDS)
     has_application_status = bool(_APPLICATION_STATUS.search(intent_q))
     has_tool = has_read_tool or has_application_status
@@ -190,6 +188,15 @@ def _classify_rule(s: HRState) -> HRState:
         and not has_application_status
     )
     asks_rule = any(w in intent_q for w in _RULE_WORDS)
+    return is_self, has_tool, future_application_only, asks_rule
+
+
+def _classify_rule(s: HRState) -> HRState:
+    """직원(employee) 규칙 분류. 인사팀(hr_admin)은 classify()에서 admin_classify로 먼저 빠져요"""
+    q = s["masked_question"]
+    intent_q = _intent_question(q)
+    other_id = s.get("has_other_emp_id", False) or "[사번]" in q
+    is_self, has_tool, future_application_only, asks_rule = _classify_signals(s)
     sensitive = _sensitive_kind(q)
     if sensitive:
         intent = sensitive         # "sensitive" 또는 규정만 묻는 말("rule")
@@ -210,48 +217,28 @@ def _classify_rule(s: HRState) -> HRState:
 
 
 def classify(s: HRState) -> HRState:
-    """0. 보안문서(노사회의록·징계회의록)가 필요한 질문인지 먼저 표시 → 1. 의도 분류 (임직원·인사팀 공통)"""
-    conf = conf_doc.detect(question_text(s))
+    """0. 보안문서(노사회의록·징계회의록)가 필요한 질문인지 먼저 표시 → 1. 의도 분류 (임직원·인사팀 공통)
+
+    둘 다 규칙이 먼저 하고, 규칙이 약한 곳만 분류 보조 LLM에 물어요 (config.CLASSIFY_LLM 설명 참고)."""
+    conf = conf_doc.classify(question_text(s))
     return {**_classify_intent(s), **conf}
 
 
 def _classify_intent(s: HRState) -> HRState:
-    if s.get("role") == "hr_admin":                # 인사팀은 전용 분류 (역할은 토큰에서, 순서는 아래와 같음)
+    if s.get("role") == "hr_admin":                # 인사팀은 전용 분류 (역할은 토큰에서)
         return classify_admin_state(s)
-    if config.CLASSIFY_MODE == "rule":
-        return _classify_rule(s)
-
-    question = question_text(s)
-    tagged = s["masked_question"]            # 개인정보 소개만 있는 문장(질문 없음)은 태그로 알아봐요
-    rule_result = None
-    if config.CLASSIFY_MODE in {"hybrid", "assist"}:
-        rule_result = _classify_rule(s)
-        if rule_result["intent"] in {"sensitive", "refuse"}:
-            return rule_result
-        if not has_question_content(tagged):
-            return rule_result
-    elif not has_question_content(tagged):
-        return {"intent": "rule"}
-
-    result = llm_classify.classify(question, date.today())
+    rule = _classify_rule(s)
+    # ② 규칙이 이미 민감·거절로 정했거나 질문 내용이 없으면 LLM을 부르지 않아요
+    if (not llm_classify.enabled() or rule["intent"] in {"sensitive", "refuse"}
+            or not has_question_content(s["masked_question"])):
+        return rule
+    result = llm_classify.classify(question_text(s), date.today())
     if result is None:
-        log.warning("LLM 의도 분류에 실패해 규칙 결과로 대체합니다")
-        return rule_result or _classify_rule(s)
-
-    if result["intent"] in {"sensitive", "refuse"}:
-        return {
-            "intent": result["intent"],
-            "classifier_tools": [],
-            "classifier_calc": None,
-        }
-    if config.CLASSIFY_MODE == "assist":
-        # 의도와 조회 도구는 규칙 그대로 두고, LLM은 민감·타인 조회 보완과 계산 값 추출에만 써요
-        return {"intent": rule_result["intent"], "classifier_calc": result["calc"]}
-    return {
-        "intent": result["intent"],
-        "classifier_tools": result["tools"],
-        "classifier_calc": result["calc"],
-    }
+        log.warning("분류 보조 LLM 호출에 실패해 규칙 결과만 씁니다")
+        return rule
+    if result["intent"] in {"sensitive", "refuse"}:   # 규칙이 놓친 민감·타인 조회 보완
+        return {"intent": result["intent"]}
+    return {**rule, "classifier_calc": result["calc"]}   # 의도·조회 도구는 규칙 그대로
 
 
 # ───────────── lookup: 본인 조회 ─────────────
@@ -259,34 +246,10 @@ def lookup(s: HRState) -> HRState:
     """사번은 반드시 토큰에서 온 s['employee_id']만 사용. DB가 있으면 app/tools.py의 정해진 조회만 실행"""
     if config.USE_DB:
         from .. import tools
-        selected_tools = s.get("classifier_tools")
-        data, used = tools.run_lookups(
-            s["employee_id"],
-            question_text(s),
-            selected_tools=selected_tools if isinstance(selected_tools, list) else None,
-        )
+        data, used = tools.run_lookups(s["employee_id"], question_text(s))
     else:
-        record = dict(HR_RECORDS.get(s["employee_id"], {}))
-        selected_tools = s.get("classifier_tools")
-        if isinstance(selected_tools, list):
-            tool_data = {
-                "profile": "기본정보",
-                "leave_balance": "연차",
-            }
-            requested_tools = ["profile", *(name for name in selected_tools if name != "profile")]
-            data = {
-                tool_data[name]: record[tool_data[name]]
-                for name in requested_tools
-                if name in tool_data and tool_data[name] in record
-            }
-            used = [
-                name
-                for name in requested_tools
-                if name in tool_data and tool_data[name] in record
-            ]
-        else:
-            data = record
-            used = list(data)
+        data = dict(HR_RECORDS.get(s["employee_id"], {}))
+        used = list(data)
     return {"lookup": data, "tools_used": used}
 
 
@@ -503,9 +466,7 @@ def calc(s: HRState) -> HRState:
     question = question_text(s)
     classifier_calc = s.get("classifier_calc")
     if config.CALC_TOOLS and isinstance(classifier_calc, dict):
-        result = _calc_from_classifier(
-            classifier_calc, s.get("chunks", []), question
-        )
+        result = _calc_from_classifier(classifier_calc, s.get("chunks", []), question)
         if result is not None:
             return {"calc": result}
     trip = re.search(r"(\d+)\s*박\s*(\d+)\s*일", question)
@@ -669,7 +630,7 @@ def _llm_answer(s: HRState) -> str:
         f"[근거]\n{ctx or '(없음)'}\n\n"
         f"[조회 결과]\n{json.dumps(_prompt_lookup(s), ensure_ascii=False, default=str)}\n\n"
         f"[계산 결과]\n{json.dumps(s.get('calc', {}), ensure_ascii=False)}\n\n"
-        f"[질문]\n{question_text(s)}"
+        f"[질문]\n{s.get('llm_question', question_text(s))}"
     )
     base = urlsplit(config.LLM_BASE_URL)
     if base.scheme == "http" and base.hostname in {"localhost", "127.0.0.1"} \
@@ -789,7 +750,10 @@ def route_after_verify(s: HRState) -> str:
 
 # ───────────── refuse / sensitive ─────────────
 def refuse(s: HRState) -> HRState:
-    if s.get("intent") == "refuse":
+    if s.get("refuse_reason") == "chat_log":
+        msg = ("직원 개인의 챗봇 대화 내용이나 상담·신고한 직원이 누구인지는 알려드릴 수 없어요. "
+               "많이 물어본 주제처럼 사람을 알 수 없는 집계만 볼 수 있어요.")
+    elif s.get("intent") == "refuse":
         msg = "다른 직원의 정보나 권한 밖의 내용은 알려드릴 수 없어요. 필요하면 인사팀에 정식으로 요청해 주세요."
     else:
         msg = "이 질문은 등록된 규정에서 근거를 찾지 못했어요. 정확한 내용은 인사팀에 확인해 주세요."
@@ -810,7 +774,8 @@ def write_log(s: HRState) -> HRState:
     """가명 ID와 마스킹한 내용만 콘솔·DB 로그에 저장한다."""
     kind = s.get("kind") or "answer"
     hide = s.get("intent") == "sensitive" or s.get("sensitive_topic")   # sensitive_topic: 인사팀의 민감 주제 질문
-    question_masked = "[민감 주제 문의]" if hide else s["masked_question"]
+    question_masked = ("[민감 주제 문의]" if hide else
+                       "[기밀문서 질문]" if s.get("conf_active") else s["masked_question"])
     pii_found = dict(s.get("pii_found", {}))
     if s.get("intent") == "refuse":
         def mask_other_name(match: re.Match) -> str:
@@ -820,7 +785,9 @@ def write_log(s: HRState) -> HRState:
             return "[타인이름]" + match.group("title")
 
         question_masked = _LOG_OTHER_NAME.sub(mask_other_name, question_masked)
-    if hide:
+    if s.get("conf_active"):
+        answer_masked = "[기밀문서 답변]" if s.get("answer") else None
+    elif hide:
         answer_masked = None
     elif s.get("admin_result") is not None:
         answer_masked = ADMIN_ANSWER_LOG_PLACEHOLDER if s.get("answer") else None

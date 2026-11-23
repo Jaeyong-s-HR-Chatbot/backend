@@ -1,9 +1,12 @@
-"""LLM-based intent and calculation-slot classification."""
+"""임직원 질문 분류 보조 LLM (② 놓친 민감·타인 조회 보완 + 계산 값 추출).
+
+nodes._classify_intent가 규칙 분류 뒤에 불러요. 의도·조회 도구는 규칙 결과를 쓰고, 여기 응답에서는
+sensitive·refuse 판정과 계산 값(calc)만 가져가요. 보안문서 판단(conf_doc)·인사팀 기간 값(admin_params_llm)도
+이 파일의 chat_json·enabled를 같이 써요."""
 import hashlib
 import json
 import logging
 import math
-import re
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -169,28 +172,40 @@ def _chat_url() -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
 
 
-def _request(question: str, today: date) -> str:
+def enabled() -> bool:
+    """분류 보조 LLM을 쓸지: CLASSIFY_LLM이 켜져 있고 실제 LLM이 연결돼 있을 때만"""
+    return config.CLASSIFY_LLM and not config.USE_FAKE_LLM
+
+
+def is_local() -> bool:
+    """분류 LLM이 이 컴퓨터에서 도는지 (기밀문서 질문은 로컬 LLM에만 보내요)"""
+    host = urlsplit(_chat_url()).hostname
+    return host in {"localhost", "127.0.0.1", "::1"}
+
+
+def chat_json(system: str, user: str, schema: dict, num_predict: int = 256) -> str:
+    """Ollama /api/chat에 JSON 스키마를 지정해 묻고 응답 글자를 돌려줘요. 실패하면 httpx 오류 등을 그대로 올려요."""
     response = httpx.post(
         _chat_url(),
         json={
             "model": config.CLASSIFY_MODEL,
-            "messages": [
-                {"role": "system", "content": _system_prompt(today)},
-                {"role": "user", "content": question},
-            ],
-            "format": OUTPUT_SCHEMA,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "format": schema,
             "stream": False,
             "think": False,
-            "options": {"temperature": 0, "num_predict": OUTPUT_LIMIT},
+            "options": {"temperature": 0, "num_predict": num_predict},
         },
         timeout=config.CLASSIFY_TIMEOUT,
     )
     response.raise_for_status()
-    payload = response.json()
-    content = payload["message"]["content"]
+    content = response.json()["message"]["content"]
     if not isinstance(content, str):
         raise TypeError("Ollama response content is not text")
     return content
+
+
+def _request(question: str, today: date) -> str:
+    return chat_json(_system_prompt(today), question, OUTPUT_SCHEMA, OUTPUT_LIMIT)
 
 
 def _nonnegative_number(value) -> bool:
