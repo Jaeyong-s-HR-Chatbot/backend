@@ -35,6 +35,7 @@ class HRState(TypedDict, total=False):
     llm_question: str
     refuse_reason: str         # 인사팀 거절 이유: chat_log (특정인 대화 기록·민감 상담자 신원)
     sensitive_topic: bool     # 인사팀이 민감 주제를 물음 → 검색은 하되 로그는 [민감 주제 문의]로
+    classifier_calc: dict | None   # 분류 보조 LLM이 뽑은 계산 값 (임직원)
     admin_tool: str            # 인사팀 집계 도구 이름 (app/admin_tools.py)
     admin_params: dict         # 그 도구의 인자 (질문에서 뽑은 기간·기준값)
     search_hint: str           # 규정 검색어에 덧붙일 말 (인사팀 근태·촉진 도구가 근거 조문을 찾도록)

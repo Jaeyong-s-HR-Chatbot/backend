@@ -1,4 +1,10 @@
-"""임직원 의도 분류 평가 (규칙 분류만, 답변 생성은 안 함). LLM은 도구 호출 뒤 답변 생성에서만 써요."""
+"""임직원 의도 분류 평가 (답변 생성은 안 함).
+
+    python scripts/eval_intent.py --split dev            # 규칙만
+    python scripts/eval_intent.py --split dev --llm      # 규칙 vs 규칙+분류 보조 LLM (.env의 LLM, 같은 문장으로 비교)
+
+--llm이면 few-shot 예시(app/data/classify_examples.json)와 같은 쌍의 문장은 두 방식 모두 채점에서 빼요.
+LLM 응답은 eval/intent/cache에 저장해 다시 돌릴 때 재사용해요."""
 import argparse
 import csv
 import json
@@ -13,7 +19,7 @@ if str(ROOT) not in sys.path:
 
 from app import calc_rules, config, tools
 from app.fake_data import SAMPLE_CHUNKS
-from app.graph import nodes
+from app.graph import llm_classify, nodes
 
 DATA_PATH = ROOT / "eval" / "intent" / "intent_cases.jsonl"
 REVIEW_PATH = ROOT / "eval" / "intent" / "intent_cases_review.csv"
@@ -32,6 +38,8 @@ REVIEW_COLUMNS = (
     "수정_intent",
     "수정_메모",
 )
+CACHE_PATH = ROOT / "eval" / "intent" / "cache"
+EXAMPLES_PATH = ROOT / "app" / "data" / "classify_examples.json"
 EMPLOYEE_ID = "E1584"
 OWN_NAME = "이서준"
 
@@ -155,7 +163,9 @@ def _business_trip_slots(question):
     }
 
 
-def _calc_prediction(masked_question):
+def _calc_prediction(masked_question, classifier_calc=None):
+    if classifier_calc is not None:      # 분류 보조 LLM이 뽑은 계산 값
+        return classifier_calc
     calc_state = {
         "masked_question": masked_question,
         "chunks": SAMPLE_CHUNKS,
@@ -214,7 +224,7 @@ def _predict(case):
     ):
         predicted_intent = "no_question"
     predicted_tools = _selected_tools(predicted_intent, state["masked_question"])
-    predicted_calc = _calc_prediction(state["masked_question"])
+    predicted_calc = _calc_prediction(state["masked_question"], state.get("classifier_calc"))
     return predicted_intent, predicted_tools, predicted_calc
 
 
@@ -337,12 +347,28 @@ def _markdown(split, cases, metrics):
     return "\n".join(lines) + "\n"
 
 
-def _scoring_cases(split):
+def _scoring_cases(split, exclude_examples=False):
     cases = _read_cases()
-    return cases if split == "all" else [case for case in cases if case["split"] == split]
+    cases = cases if split == "all" else [case for case in cases if case["split"] == split]
+    if not exclude_examples:
+        return cases
+    examples = json.loads(EXAMPLES_PATH.read_text(encoding="utf-8")).get("examples", [])
+    pairs = {e["id"].rsplit("-", 1)[0] for e in examples}
+    return [case for case in cases if case["id"].rsplit("-", 1)[0] not in pairs]
 
 
-def _run(cases):
+def _run(cases, use_llm=False):
+    if use_llm:
+        if config.USE_FAKE_LLM:
+            raise SystemExit("--llm은 .env에 LLM_BASE_URL이 있어야 해요")
+        config.CLASSIFY_LLM = True
+        with llm_classify.evaluation_cache(CACHE_PATH) as stats:
+            predictions, metrics = _run(cases)
+        config.CLASSIFY_LLM = False
+        metrics["llm"] = {"calls": stats.calls, "cache_hits": stats.cache_hits, "errors": len(stats.errors),
+                          "json_failures": stats.json_failures, "validation_failures": stats.validation_failures}
+        return predictions, metrics
+    config.CLASSIFY_LLM = False
     config.CALC_TOOLS = True
     calc_rules.load_rules.cache_clear()
     predictions = []
@@ -360,6 +386,7 @@ def _run(cases):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--split", choices=("dev", "test", "all"), default="dev")
+    parser.add_argument("--llm", action="store_true", help="규칙 vs 규칙+분류 보조 LLM 비교")
     parser.add_argument("--out", type=Path, help="마크다운 결과 저장 경로")
     parser.add_argument("--apply-review", action="store_true", help="검수 CSV 수정 칸을 JSONL에 반영")
     args = parser.parse_args()
@@ -368,9 +395,22 @@ def main():
         print("경고: test 는 최종 비교 때 한 번만 재세요.", file=sys.stderr)
     if args.apply_review:
         _apply_review()
-    cases = _scoring_cases(args.split)
+    cases = _scoring_cases(args.split, exclude_examples=args.llm)
     _, metrics = _run(cases)
     report = _markdown(args.split, cases, metrics)
+    if args.llm:
+        _, llm_metrics = _run(cases, use_llm=True)
+        pct = lambda v: "N/A" if v is None else f"{v * 100:.1f}%"
+        rows = [("전체 정확도", "accuracy"), ("조회 도구", "tool_accuracy"), ("계산 종류", "calc_type_accuracy"),
+                ("계산 값", "calc_value_accuracy")]
+        table = ["# 규칙 vs 규칙+분류 보조 LLM", "", f"- 문장 수: {len(cases)} (few-shot 예시 쌍 제외)",
+                 f"- LLM: {llm_metrics['llm']}", "", "| 지표 | 규칙 | 규칙+LLM |", "| --- | ---: | ---: |"]
+        table += [f"| {name} | {pct(metrics[key])} | {pct(llm_metrics[key])} |" for name, key in rows]
+        for label in ("sensitive", "refuse"):
+            table.append(f"| {label} 재현율 | {pct(metrics['per_label'][label]['recall'])} | "
+                         f"{pct(llm_metrics['per_label'][label]['recall'])} |")
+        table.append(f"| 문장당 평균 ms | {metrics['average_ms']:.1f} | {llm_metrics['average_ms']:.1f} |")
+        report = "\n".join(table) + "\n\n" + _markdown(args.split + " · 규칙+LLM", cases, llm_metrics)
     print(report, end="")
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)

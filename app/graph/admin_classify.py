@@ -3,7 +3,7 @@
 임직원 분류(nodes._classify_rule)와 같은 순서로 하되 두 군데가 달라요.
 1. 민감 단어 → 종료하지 않고 sensitive_topic 표시만 붙임 (검색·답변은 하고 로그만 [민감 주제 문의])
 2. 다른 직원 언급 → 인사팀은 업무상 볼 수 있으니 거절하지 않음
-규칙 분류만 써요. LLM은 도구 호출 뒤 답변 생성에서만 불러요.
+의도·집계 도구는 규칙으로 정하고, 도구의 기간·기준값만 분류 보조 LLM으로 다시 뽑아요 (admin_params_llm).
 
 의도
 - rule         : 규정·절차만 → 검색 → 답변 (징계·고충도 여기로)
@@ -334,9 +334,20 @@ def classify_admin(q: str, today: date | None = None) -> dict:
     return {"intent": "rule", "sensitive_topic": sensitive_topic}
 
 
-def classify_admin_state(s: dict, today: date | None = None) -> dict:
-    """인사팀 분류 진입점 (nodes.classify가 hr_admin일 때 불러요). 규칙 분류만 써요.
-    today는 평가에서 기준일을 고정할 때만 넘겨요."""
-    from .nodes import question_text   # 순환 import 방지
+def classify_admin_state(s: dict, today: date | None = None, use_llm: bool | None = None) -> dict:
+    """인사팀 분류 진입점 (nodes.classify가 hr_admin일 때 불러요).
 
-    return classify_admin(question_text(s), today or date.today())
+    의도·집계 도구는 규칙이 정하고, 도구가 정해지면 ③ 그 도구의 기간·기준값만 분류 보조 LLM에 다시 물어
+    맞는 형식의 값만 규칙 값 위에 덮어써요 (실패하면 규칙 값). today·use_llm은 평가에서만 넘겨요."""
+    from . import admin_params_llm, llm_classify   # 순환 import 방지
+    from .nodes import question_text
+
+    today = today or date.today()
+    question = question_text(s)
+    result = classify_admin(question, today)
+    use_llm = llm_classify.enabled() if use_llm is None else use_llm
+    if use_llm and result.get("admin_tool"):
+        params = admin_params_llm.extract(question, result["admin_tool"], today)
+        if params is not None:
+            result["admin_params"] = {**result.get("admin_params", {}), **params}
+    return result
