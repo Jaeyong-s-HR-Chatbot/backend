@@ -8,8 +8,12 @@
 - 정답 data와 both는 같은 정답으로 봐요 (backend는 집계 도구를 쓰면 항상 규정도 같이 찾음)
 - 질문 내용이 없으면 파이프라인처럼 no_question으로 봐요
 - 정답이 refuse인 문항(A-L03·L04 특정인 대화 기록·민감 상담자 조회)도 채점해요. 117번(일반 직원 계정)은 role이 employee라 빠져요
+- 인자는 도구가 실제로 쓰는 값으로 비교해요: 비워 둔 인자는 도구 기본값(예: 정년 60세, 근속 20년)으로,
+  실행할 때 정하는 기본값(None → 최근 연도·최근 급여월·근속 10·20·30년)은 골든셋 기준일 데이터 기준 값으로 채워요.
+  정답에 있는데 도구가 받지 않는 인자는 그대로 오답이에요 (도구가 그 조건을 못 씀).
 """
 import argparse
+import inspect
 import json
 import sys
 from datetime import date, datetime
@@ -44,6 +48,31 @@ def _norm(v):
     if isinstance(v, float) and v.is_integer():   # 10과 10.0은 같은 값
         v = int(v)
     return str(v)
+
+
+def _runtime_defaults(as_of: date) -> dict:
+    """도구가 None일 때 실행 중에 정하는 기본값 (골든셋 데이터는 기준일까지 들어 있음)"""
+    y, m = (as_of.year, as_of.month - 1) if as_of.month > 1 else (as_of.year - 1, 12)
+    return {"year": as_of.year,                 # _latest_year(...) / date.today().year
+            "pay_month": f"{y}-{m:02d}",        # max(pay_month) = 지난달 급여
+            "years": [10, 20, 30]}              # service_anniversary 기본 근속 연수
+
+
+def effective_params(tool: str | None, params: dict, as_of: date) -> dict:
+    """도구가 실제로 쓰는 인자 값: 비워 둔 인자는 도구 기본값 → 실행 중 기본값으로 채움"""
+    fn = admin_tools.ADMIN_TOOLS.get(tool or "")
+    if fn is None:
+        return dict(params)
+    runtime = _runtime_defaults(as_of)
+    out = dict(params)
+    for name, p in inspect.signature(fn).parameters.items():
+        value = params.get(name)
+        if value is None and p.default is not inspect.Parameter.empty:
+            value = p.default
+        if value is None:
+            value = runtime.get(name)
+        out[name] = value
+    return out
 
 
 def predict(question: str, today: date, use_llm: bool = False) -> dict:
@@ -110,7 +139,8 @@ def run(split: str = "all", items=None, as_of: date | None = None, use_llm: bool
         gold = same_intent(it["intent"])
         gp = it.get("params") or {}
         tool_ok = (p["admin_tool"] == it["tool"]) if it["tool"] else None
-        params_ok = (all(_norm(p["admin_params"].get(k)) == _norm(v) for k, v in gp.items())
+        used = effective_params(p["admin_tool"], p["admin_params"], as_of)
+        params_ok = (all(_norm(used.get(k)) == _norm(v) for k, v in gp.items())
                      if tool_ok else (False if it["tool"] else None))
         rows.append({"id": it["id"], "split": it["split"], "question": it["question"],
                      "gold_intent": gold, "pred_intent": same_intent(p["intent"]),
