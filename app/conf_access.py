@@ -17,6 +17,8 @@ def access(emp_id: str, roles: set[str], doc: dict) -> AccessMode:
     if (level not in {"L1", "L2", "L3", "L4"} or doc.get("category") not in CATEGORY_ROLES
             or doc.get("doc_kind") not in {"회의록", "녹취록"}):
         return "deny"
+    if doc["doc_kind"] == "녹취록" and level in {"L1", "L2"} and doc.get("nli_status") != "success":
+        level = "L3"
     allowed = doc.get("allowed_roles")
     participants = doc.get("participants")
     if not isinstance(allowed, list) or not all(isinstance(role, str) for role in allowed):
@@ -118,6 +120,10 @@ def segment_view(mode: AccessMode, segment: dict) -> list[dict]:
     if mode != "masked" or segment.get("level") not in {"L1", "L2", "L3", "L4"}:
         raise ValueError("유효하지 않은 열람 모드 또는 등급")
     level = max(3, int(segment["level"][1]))
+    if type(segment.get("review_required")) is not bool:
+        raise ValueError("유효하지 않은 검토 필요 표시")
+    if segment["review_required"]:
+        return _redacted(level)
     if segment.get("sen"):
         return _redacted(level)
     if is_subject_department(segment):

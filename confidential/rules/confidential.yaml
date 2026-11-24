@@ -67,7 +67,7 @@ documents:
   file: labor-2026-q4-transcript.pdf
   date: 2026-11-05
   category: 노사
-  level: L3
+  level: L2
   allowed_roles:
   - HR_LABOR
   participants: &id001

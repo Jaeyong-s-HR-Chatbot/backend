@@ -135,7 +135,7 @@ def _sections(doc, segments, mode):
             article = segment.get("article")
             heading = article if mode == "full" or article in SAFE_HEADINGS else "기타"
             heading = heading or "기타"
-        item = dict(segment, level=doc["level"])
+        item = dict(segment, level=segment["level"] if segment.get("review_required") else doc["level"])
         rendered = conf_access.segment_view(mode, item)
         if heading not in sections:
             sections[heading] = ViewSection(heading=heading, blocks=[])

@@ -65,6 +65,10 @@ SEARCH_MODE = _get("SEARCH_MODE", "auto")
 RAG_PATH = _get("RAG_PATH")          # rag 패키지 폴더. 비우면 backend 옆의 rag-main
 EMBED_MODEL = _get("EMBED_MODEL", "BAAI/bge-m3")
 
+# Confidential speech NLI classification is opt-in and loads only a local model directory.
+NLI_ENABLED = _get("NLI_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+NLI_MODEL_DIR = _get("NLI_MODEL_DIR")
+
 # 근거 검증: 검색 1위 점수가 이보다 낮으면 다시 검색하고, 그래도 낮으면 거절
 VERIFY_MIN_SCORE = float(_get("VERIFY_MIN_SCORE", "0.3"))
 

@@ -17,13 +17,13 @@ ROLES = {
     "E1243": {"EMPLOYEE", "TEAM_LEAD"},
 }
 EXPECTED = {
-    "E1422": ["deny", "deny", "deny", "deny", "masked", "masked"],
-    "E1243": ["deny", "deny", "deny", "deny", "masked", "masked"],
-    "E1686": ["full", "full", "full", "deny", "masked", "masked"],
+    "E1422": ["deny", "deny", "deny", "masked", "masked", "masked"],
+    "E1243": ["deny", "deny", "deny", "masked", "masked", "masked"],
+    "E1686": ["full", "full", "full", "masked", "masked", "masked"],
     "E1707": ["deny", "deny", "deny", "full", "full", "full"],
     "E1622": ["deny", "deny", "deny", "deny", "deny", "deny"],
-    "E1545": ["deny", "subject", "deny", "deny", "masked", "masked"],
-    "E1007": ["full", "full", "deny", "deny", "masked", "masked"],
+    "E1545": ["deny", "subject", "deny", "masked", "masked", "masked"],
+    "E1007": ["full", "full", "deny", "masked", "masked", "masked"],
     "E1459": ["deny", "deny", "deny", "full", "full", "full"],
     "E1003": ["deny", "deny", "full", "full", "full", "full"],
 }
@@ -36,6 +36,7 @@ def documents():
             "doc_kind": d["doc_kind"], "category": d["category"], "level": d["level"],
             "allowed_roles": d.get("allowed_roles", []),
             "subject_emp_id": d.get("subject"), "participants": d.get("participants", []),
+            "nli_status": "success",
         }
         for d in CONF["documents"]
     }
@@ -88,7 +89,7 @@ def sample():
             {"field": "speaker_label", "type": "PS", "start": 3, "end": 6, "text": "가상인"},
         ],
         "og": [["OG", 0, 4, "가상부서"]], "pos": [["POS", 5, 9, "가상직급"]],
-        "qi": [["가상부서", "가상직급", 1, True]], "sen": None,
+        "qi": [["가상부서", "가상직급", 1, True]], "sen": None, "review_required": False,
     }
 
 
@@ -104,6 +105,31 @@ def test_sensitive_chunk_is_entirely_redacted():
     segment = sample()
     segment["sen"] = "건강"
     assert segment_view("masked", segment) == [{"redacted": True, "level": 3}]
+
+
+def test_nli_elevated_segment_is_hidden_from_masked_access():
+    segment = sample()
+    segment["review_required"] = True
+    segment["level"] = "L3"
+    assert segment_view("masked", segment) == [{"redacted": True, "level": 3}]
+    segment["level"] = "L4"
+    assert segment_view("masked", segment) == [{"redacted": True, "level": 4}]
+
+
+def test_masked_unreviewed_high_level_uses_existing_partial_masking():
+    segment = sample()
+    segment["level"] = "L4"
+    result = segment_view("masked", segment)
+    assert {"text": "위원 "} in result
+    assert len(result) > 1
+    assert "가상인" not in str(result)
+
+
+def test_invalid_review_status_fails_closed():
+    segment = sample()
+    segment["review_required"] = None
+    with pytest.raises(ValueError):
+        segment_view("masked", segment)
 
 
 def test_subject_full_and_other_segments():
