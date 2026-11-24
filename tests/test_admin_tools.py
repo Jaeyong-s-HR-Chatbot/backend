@@ -172,6 +172,16 @@ def test_training():
     assert [x["이수율"] for x in rate["표"]] == sorted(x["이수율"] for x in rate["표"])
 
 
+def test_training_incomplete_by_course_name():
+    # A-077: 기관사 보수교육(직무·필수 아님)은 대상자가 모두 이수 → 0명 (골든셋 기대값)
+    r = at.training_incomplete(year=2026, course_name="기관사 보수교육")
+    assert r["기준"] == {"연도": 2026, "과정": "기관사 보수교육"} and r["건수"] == 0 and r["표"] == []
+    # 과정 이름으로 거르면 그 과정만, 띄어쓰기는 무시
+    p = at.training_incomplete(year=2026, course_name="개인정보보호교육", limit=20)
+    assert p["건수"] > 0 and {x["과정"] for x in p["표"]} == {"개인정보보호 교육"}
+    assert p["건수"] < at.training_incomplete(year=2026, course_type="법정")["건수"]
+
+
 def test_payroll_dept_totals_latest_month():
     r = at.payroll_dept_totals()
     assert r["기준"]["급여월"] == "2026-10"

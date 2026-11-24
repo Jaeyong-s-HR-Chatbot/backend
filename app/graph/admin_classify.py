@@ -3,7 +3,7 @@
 임직원 분류(nodes._classify_rule)와 같은 순서로 하되 두 군데가 달라요.
 1. 민감 단어 → 종료하지 않고 sensitive_topic 표시만 붙임 (검색·답변은 하고 로그만 [민감 주제 문의])
 2. 다른 직원 언급 → 인사팀은 업무상 볼 수 있으니 거절하지 않음
-규칙 분류만 써요. LLM은 도구 호출 뒤 답변 생성에서만 불러요.
+의도·집계 도구는 규칙으로 정하고, 규칙이 못 뽑은 기간·기준값만 분류 보조 LLM으로 채워요 (admin_params_llm).
 
 의도
 - rule         : 규정·절차만 → 검색 → 답변 (징계·고충도 여기로)
@@ -34,6 +34,8 @@ CONSULTER = re.compile(r"(?:상담|문의|신고|제보|물어|질문)\S*\s*(?:�
 
 # 1인칭이 있어도 여러 사람을 묻는 말이면 집계 질문 ("내 팀원들 연차", "제 부서 직원 명단")
 GROUP_WORDS = ["직원", "명단", "부서", "팀원", "사람", "누구", "몇 명", "전체", "TOP"]
+# 근속 연수 목록: "근속 10·20·30년", "근속 25년", "근속 10, 20년" (연도 "2026년"은 안 잡게 1~2자리 숫자만)
+SERVICE_YEARS = re.compile(r"근속\s*((?<!\d)\d{1,2}(?:\s*[·,/]\s*\d{1,2})*)\s*년")
 # 인사팀 업무 단어. 임직원 규칙의 인사 단어(_HR_WORDS)에 더해, 이것도 없고 집계 도구도 못 찾으면 out_of_scope
 ADMIN_HR_WORDS = ["지각", "조퇴", "출퇴근", "출근", "퇴근", "정년", "수습", "촉진", "근로", "통보", "퇴사", "복직",
                   "이수율", "노사", "단체협약", "취업규칙", "위원회", "채용", "전보", "발령", "인원",
@@ -77,6 +79,23 @@ REQUEST_TYPES = {"경조금": "경조금신청", "출장": "출장신청", "출�
                  "복직": "복직신청", "휴가": "휴가신청"}
 COURSE_TYPES = {"법정": "법정", "의무교육": "법정", "직무": "직무", "승진교육": "승진", "입문": "신규", "신규": "신규",
                 "리더십": "리더십"}
+# 교육 과정 이름: "기관사 보수교육", "개인정보보호 교육", "승객 응대 실무", "비상 상황 대응 훈련"
+_COURSE = re.compile(r"((?:[가-힣A-Za-z]+\s*){0,3}?[가-힣A-Za-z]*(?:교육|과정|실무|훈련))")
+_COURSE_LEAD = re.compile(r"^(?:(?:올해|작년|이번|아직|필수|우리|전체|제|내|부서|팀)\s*)+")
+_COURSE_GENERIC = {"교육", "과정", "필수교육", "의무교육", "교육과정"}
+
+
+def _course_name(q: str) -> str | None:
+    """질문의 교육 과정 이름. 구분 단어(법정·신규·입문·승진·리더십·직무)가 들어 있거나 '교육'뿐이면 None (구분으로 거름)"""
+    m = _COURSE.search(q)
+    if not m:
+        return None
+    name = _COURSE_LEAD.sub("", m.group(1).strip()).strip()
+    if name.replace(" ", "") in _COURSE_GENERIC or any(k in name for k in COURSE_TYPES):
+        return None
+    return name
+
+
 # 규정만 묻는 말 ("보충해도 돼?", "줄여줄 수 있어?", "배정 기준"). 사람·집계를 묻는 말(DATA_WORDS)이 없으면 도구를 안 써요
 RULE_ASK = re.compile(r"해도\s*(?:돼|되)|수\s*있(?:어|나|는\s*경우|을까)|가능|기준|얼마\s*(?:줘|주|받)|해야\s*(?:돼|되|하)|되나|되는지")
 DATA_WORDS = ["명단", "누구", "몇 명", "인원", "현황", "대상자", "목록", "리스트", "직원", "사람", "부서별", "TOP",
@@ -189,8 +208,11 @@ def pick_tool(q: str, today: date) -> tuple[str | None, dict]:
     if "수습" in q:
         return "probation_ending", {"asof": today, "within_days": _num(r"(\d+)\s*일", q) or 30}
     # 교육 미이수는 입사자 단어보다 먼저 ("신규입사자 입문 과정 안 들은 사람")
-    if has("교육", "이수", "과정") and has("미이수", "안 들은", "안들은", "못 들은", "이수 안"):
+    if has("교육", "이수", "과정", "실무", "훈련") and has("미이수", "안 들은", "안들은", "못 들은", "이수 안"):
         ct = next((v for k, v in COURSE_TYPES.items() if k in q), "법정")
+        name = _course_name(q)
+        if name:                                   # "기관사 보수교육 대상인데 안 들은 사람" → 그 과정만
+            return "training_incomplete", {"year": year, "course_name": name}
         return "training_incomplete", {"year": year, "course_type": ct}
     if "입사자" in q or ("입사" in q and has("몇 명", "누구", "명단")):
         s, e = p or _month(today.year, today.month)
@@ -284,7 +306,11 @@ def _pick_extra_tool(q: str, today: date, p, start, end, has) -> tuple[str, dict
     if has("복지포인트", "복지 포인트") and has("월할", "제대로", "맞게", "중간에 입사", "복직"):
         return "welfare_points_proration_check", {"year": year}
     if "근속" in q and has("10·20·30", "10,20,30", "10 20 30", "되는 직원", "되는 사람") and "수당" not in q:
-        return "service_anniversary", {"year": year or today.year}
+        params = {"year": year or today.year}
+        years = SERVICE_YEARS.search(q)          # "근속 10·20·30년", "근속 25년" → [10, 20, 30], [25] (없으면 도구 기본 10·20·30)
+        if years:
+            params["years"] = [int(n) for n in re.findall(r"\d+", years.group(1))]
+        return "service_anniversary", params
     # 출장·경조금
     if "출장" in q and has("일비") and has("감액", "장기"):
         return "long_trip_per_diem_check", {}
@@ -334,9 +360,60 @@ def classify_admin(q: str, today: date | None = None) -> dict:
     return {"intent": "rule", "sensitive_topic": sensitive_topic}
 
 
-def classify_admin_state(s: dict, today: date | None = None) -> dict:
-    """인사팀 분류 진입점 (nodes.classify가 hr_admin일 때 불러요). 규칙 분류만 써요.
-    today는 평가에서 기준일을 고정할 때만 넘겨요."""
-    from .nodes import question_text   # 순환 import 방지
+# 인사팀은 의도·도구를 LLM이 골라요 (규칙이 대화 기록 거절로 정한 것만 규칙 그대로).
+# Colab 27B 처음 보는 질문: 규칙만 77.5% → 규칙이 rule·out_of_scope일 때만 LLM 92.1% → 전부 LLM 100%, 새로 틀림 0
+# (기존 골든셋은 세 방식 모두 99~100%). 임직원은 전부 LLM이 새로 틀리는 게 있어 규칙이 rule·out_of_scope일 때만 써요.
+# LLM_DECIDES는 평가 비교표의 예전 방식용이에요.
+LLM_DECIDES = {"rule", "out_of_scope"}
 
-    return classify_admin(question_text(s), today or date.today())
+
+def _from_llm(llm: dict | None, rule: dict) -> dict:
+    """LLM이 고른 의도·도구로 바꿔요. LLM이 실패하면 규칙 결과 그대로, 규칙과 같은 도구면 규칙 인자를 살려요."""
+    if llm is None:
+        return rule
+    topic = rule.get("sensitive_topic", False)
+    if llm["admin_tool"] and llm["admin_tool"] == rule.get("admin_tool"):
+        return rule
+    if llm["admin_tool"]:
+        return _both(llm["admin_tool"], {}, topic)     # 기간·기준값은 다음 단계(admin_params_llm)에서
+    if llm["intent"] == "refuse":
+        return {"intent": "refuse", "refuse_reason": "chat_log", "sensitive_topic": topic}
+    return {"intent": llm["intent"], "sensitive_topic": topic}
+
+
+def classify_admin_state(s: dict, today: date | None = None, use_llm: bool | None = None) -> dict:
+    """인사팀 분류 진입점 (nodes.classify가 hr_admin일 때 불러요).
+
+    규칙이 먼저 분류하고(민감 주제 표시·대화 기록 거절), 분류 보조 LLM이 의도·도구를 골라요. 규칙이 대화 기록 거절로
+    정했으면 LLM을 안 불러요. 도구가 정해지면 그 도구의 기간·기준값을 LLM에 다시 물어, 규칙이 비워 둔 인자만 질문에 근거가 있는 값으로 채워요
+    (실패하면 규칙 결과·규칙 값). today·use_llm은 평가에서만 넘겨요."""
+    from . import admin_intent_llm, admin_params_llm, llm_classify   # 순환 import 방지
+    from .nodes import question_text
+
+    today = today or date.today()
+    question = question_text(s)
+    rule = classify_admin(question, today)
+    result = rule
+    use_llm = llm_classify.enabled() if use_llm is None else use_llm
+    if use_llm and rule["intent"] != "refuse":
+        result = _from_llm(admin_intent_llm.classify(question), rule)
+    if use_llm and result.get("admin_tool"):
+        params = admin_params_llm.extract(question, result["admin_tool"], today)
+        if params is not None:   # 규칙이 비워 둔 인자만 채움 (규칙 값을 덮어쓰면 맞던 값이 틀어졌음: 휴가 종류 목록, 기본 월)
+            merged = dict(result.get("admin_params", {}))
+            for key, value in params.items():
+                if merged.get(key) is None:
+                    merged[key] = value
+            result["admin_params"] = merged
+        if result is not rule and _missing_required(result["admin_tool"], result.get("admin_params", {})):
+            log.warning("LLM이 고른 집계 도구의 필수 인자(기간 등)를 못 채워 규칙 결과를 씁니다")
+            return rule
+    return result
+
+
+def _missing_required(tool: str, params: dict) -> bool:
+    import inspect
+    from .. import admin_tools
+    fn = admin_tools.ADMIN_TOOLS[tool]
+    return any(p.default is inspect.Parameter.empty and params.get(name) is None
+               for name, p in inspect.signature(fn).parameters.items())

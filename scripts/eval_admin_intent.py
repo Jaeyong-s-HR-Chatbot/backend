@@ -2,13 +2,18 @@
 
     python scripts/eval_admin_intent.py
     python scripts/eval_admin_intent.py --split test --save
+    python scripts/eval_admin_intent.py --llm     # 규칙 vs 규칙+③ 기간·기준값 LLM (.env의 LLM)
 
-의도 분류는 규칙만 써요 (LLM은 도구 호출 뒤 답변 생성에서만 씀).
+의도·집계 도구는 규칙이 정하고, --llm이면 도구가 정해진 문항에서 기간·기준값만 분류 보조 LLM으로 다시 뽑아요.
 - 정답 data와 both는 같은 정답으로 봐요 (backend는 집계 도구를 쓰면 항상 규정도 같이 찾음)
 - 질문 내용이 없으면 파이프라인처럼 no_question으로 봐요
 - 정답이 refuse인 문항(A-L03·L04 특정인 대화 기록·민감 상담자 조회)도 채점해요. 117번(일반 직원 계정)은 role이 employee라 빠져요
+- 인자는 도구가 실제로 쓰는 값으로 비교해요: 비워 둔 인자는 도구 기본값(예: 정년 60세, 근속 20년)으로,
+  실행할 때 정하는 기본값(None → 최근 연도·최근 급여월·근속 10·20·30년)은 골든셋 기준일 데이터 기준 값으로 채워요.
+  정답에 있는데 도구가 받지 않는 인자는 그대로 오답이에요 (도구가 그 조건을 못 씀).
 """
 import argparse
+import inspect
 import json
 import sys
 from datetime import date, datetime
@@ -19,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app import admin_tools  # noqa: E402
+from app import admin_tools, config  # noqa: E402
 from app.graph import nodes  # noqa: E402
 from app.graph.admin_classify import classify_admin_state  # noqa: E402
 
@@ -31,6 +36,24 @@ LOGIN = "E1307"   # 골든셋을 만들 때 쓴 인사팀 계정
 def load_items(path: Path = GOLDEN_PATH) -> tuple[list[dict], date]:
     data = json.loads(path.read_text(encoding="utf-8"))
     return [i for i in data["items"] if i["role"] == "hr_admin"], date.fromisoformat(data["as_of"])
+
+
+def load_extra_items(path: Path, as_of: date = date(2026, 11, 9), exclude=()) -> tuple[list[dict], date]:
+    """다른 질문 파일(처음 보는 질문 등): 한 줄에 {"id", "question", "intent", "tool", "params"}, ``` 줄은 건너뜀.
+    as_of는 질문을 만들 때 정한 오늘 날짜 (상대 날짜 정답의 기준)"""
+    items = []
+    for n, line in enumerate(Path(path).read_text(encoding="utf-8-sig").splitlines(), 1):
+        s = line.strip()
+        if not s or s.startswith("```"):
+            continue
+        it = json.loads(s)
+        if not {"id", "question", "intent"} <= set(it):
+            raise ValueError(f"{path}:{n}: id·question·intent가 필요해요")
+        if it["id"] in exclude:
+            continue
+        items.append({"role": "hr_admin", "split": it.get("split", "extra"), "tool": it.get("tool"),
+                      "params": it.get("params") or {}, **{k: it[k] for k in ("id", "question", "intent")}})
+    return items, as_of
 
 
 def same_intent(v):
@@ -45,12 +68,37 @@ def _norm(v):
     return str(v)
 
 
-def predict(question: str, today: date) -> dict:
+def _runtime_defaults(as_of: date) -> dict:
+    """도구가 None일 때 실행 중에 정하는 기본값 (골든셋 데이터는 기준일까지 들어 있음)"""
+    y, m = (as_of.year, as_of.month - 1) if as_of.month > 1 else (as_of.year - 1, 12)
+    return {"year": as_of.year,                 # _latest_year(...) / date.today().year
+            "pay_month": f"{y}-{m:02d}",        # max(pay_month) = 지난달 급여
+            "years": [10, 20, 30]}              # service_anniversary 기본 근속 연수
+
+
+def effective_params(tool: str | None, params: dict, as_of: date) -> dict:
+    """도구가 실제로 쓰는 인자 값: 비워 둔 인자는 도구 기본값 → 실행 중 기본값으로 채움"""
+    fn = admin_tools.ADMIN_TOOLS.get(tool or "")
+    if fn is None:
+        return dict(params)
+    runtime = _runtime_defaults(as_of)
+    out = dict(params)
+    for name, p in inspect.signature(fn).parameters.items():
+        value = params.get(name)
+        if value is None and p.default is not inspect.Parameter.empty:
+            value = p.default
+        if value is None:
+            value = runtime.get(name)
+        out[name] = value
+    return out
+
+
+def predict(question: str, today: date, use_llm: bool = False) -> dict:
     s = {"employee_id": LOGIN, "role": "hr_admin", "question": question}
     s.update(nodes.guard(s))
     if not nodes.has_question_content(s["masked_question"]):
         return {"intent": "no_question", "admin_tool": None, "admin_params": {}}
-    r = classify_admin_state(s, today)
+    r = classify_admin_state(s, today, use_llm=use_llm)
     return {"intent": r["intent"], "admin_tool": r.get("admin_tool"), "admin_params": r.get("admin_params") or {},
             "sensitive_topic": r.get("sensitive_topic")}
 
@@ -93,7 +141,7 @@ def summarize(rows: list[dict]) -> dict:
     }
 
 
-def run(split: str = "all", items=None, as_of: date | None = None) -> dict:
+def run(split: str = "all", items=None, as_of: date | None = None, use_llm: bool = False) -> dict:
     """채점 결과: {"summary": {...}, "by_split": {...}, "rows": [...]}"""
     if items is None:
         items, golden_as_of = load_items()
@@ -102,14 +150,15 @@ def run(split: str = "all", items=None, as_of: date | None = None) -> dict:
     for it in (i for i in items if split == "all" or i["split"] == split):
         t = perf_counter()
         try:
-            p = predict(it["question"], as_of)
+            p = predict(it["question"], as_of, use_llm)
         except Exception as e:   # 한 문항 오류로 전체가 멈추지 않게
             p = {"intent": f"error:{type(e).__name__}", "admin_tool": None, "admin_params": {}}
         ms = (perf_counter() - t) * 1000
         gold = same_intent(it["intent"])
         gp = it.get("params") or {}
         tool_ok = (p["admin_tool"] == it["tool"]) if it["tool"] else None
-        params_ok = (all(_norm(p["admin_params"].get(k)) == _norm(v) for k, v in gp.items())
+        used = effective_params(p["admin_tool"], p["admin_params"], as_of)
+        params_ok = (all(_norm(used.get(k)) == _norm(v) for k, v in gp.items())
                      if tool_ok else (False if it["tool"] else None))
         rows.append({"id": it["id"], "split": it["split"], "question": it["question"],
                      "gold_intent": gold, "pred_intent": same_intent(p["intent"]),
@@ -118,7 +167,45 @@ def run(split: str = "all", items=None, as_of: date | None = None) -> dict:
                      "intent_ok": same_intent(p["intent"]) == gold, "tool_ok": tool_ok, "params_ok": params_ok,
                      "scored": True, "ms": round(ms, 1)})
     by_split = {sp: summarize([r for r in rows if r["split"] == sp]) for sp in sorted({r["split"] for r in rows})}
-    return {"summary": summarize(rows), "by_split": by_split, "rows": rows}
+    out = {"summary": summarize(rows), "by_split": by_split, "rows": rows}
+    if use_llm:
+        out["policies"] = policy_table(rows, as_of)
+    return out
+
+
+def policy_table(rows: list[dict], as_of: date) -> list[dict]:
+    """LLM이 의도·도구를 어디까지 고를지 세 방식 비교 (평가 전용: 모든 문항에 의도·도구 LLM을 한 번씩 불러요).
+    - 규칙만 / 예전(규칙이 rule·out_of_scope이고 도구가 없을 때만 LLM) / 지금(전부 LLM, 규칙이 refuse면 규칙)"""
+    from app.graph import admin_intent_llm
+    from app.graph.admin_classify import LLM_DECIDES, classify_admin
+
+    policies = {"규칙만": [], "예전 (규칙이 rule·out_of_scope면 LLM)": [], "지금 (전부 LLM)": []}
+    for r in rows:
+        if r["pred_intent"] == "no_question":
+            for v in policies.values():
+                v.append(("no_question", None))
+            continue
+        rule = classify_admin(r["question"], as_of)
+        rule_pick = (same_intent(rule["intent"]), rule.get("admin_tool"))
+        llm = admin_intent_llm.classify(r["question"])
+        llm_pick = (same_intent(llm["intent"]), llm["admin_tool"]) if llm else rule_pick
+        policies["규칙만"].append(rule_pick)
+        policies["예전 (규칙이 rule·out_of_scope면 LLM)"].append(
+            llm_pick if rule["intent"] in LLM_DECIDES and not rule.get("admin_tool") else rule_pick)
+        policies["지금 (전부 LLM)"].append(rule_pick if rule["intent"] == "refuse" else llm_pick)
+    out = []
+    for name, picks in policies.items():
+        intent_ok = [p[0] == r["gold_intent"] for p, r in zip(picks, rows)]
+        tool_rows = [(p, r) for p, r in zip(picks, rows) if r["gold_tool"]]
+        base = policies["규칙만"]
+        out.append({"방식": name, "의도 정확도": _rate(intent_ok),
+                    "도구 정확도": _rate([p[1] == r["gold_tool"] for p, r in tool_rows]),
+                    "도구 오탐": sum(1 for p, r in zip(picks, rows) if p[1] and not r["gold_tool"]),
+                    "고침": sum(1 for p, b, r in zip(picks, base, rows)
+                              if (p[0] == r["gold_intent"] and p[1] == r["gold_tool"]) and not (b[0] == r["gold_intent"] and b[1] == r["gold_tool"])),
+                    "새로 틀림": sum(1 for p, b, r in zip(picks, base, rows)
+                                 if (b[0] == r["gold_intent"] and b[1] == r["gold_tool"]) and not (p[0] == r["gold_intent"] and p[1] == r["gold_tool"]))})
+    return out
 
 
 def markdown(result: dict) -> str:
@@ -133,6 +220,11 @@ def markdown(result: dict) -> str:
     missing = sorted({x["gold_tool"] for x in result["rows"] if x["gold_tool"] and x["gold_tool"] not in admin_tools.ADMIN_TOOLS})
     if missing:
         lines += ["", f"골든셋 정답 도구 중 backend에 없는 도구 {len(missing)}개 (도구 정확도에서 항상 틀림): " + ", ".join(missing)]
+    if result.get("policies"):
+        lines += ["", "LLM이 의도·도구를 어디까지 고를지 (같은 LLM 응답, 인자는 안 봄)", "",
+                  "| 방식 | 의도 정확도 | 도구 정확도 | 도구 오탐 | 규칙 대비 고침 | 새로 틀림 |", "| --- | ---: | ---: | ---: | ---: | ---: |"]
+        lines += [f"| {p['방식']} | {p['의도 정확도']} | {p['도구 정확도']} | {p['도구 오탐']} | {p['고침']} | {p['새로 틀림']} |"
+                  for p in result["policies"]]
     return "\n".join(lines)
 
 
@@ -151,10 +243,28 @@ def main():
     sys.stdout.reconfigure(encoding="utf-8")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--split", choices=("all", "dev", "test", "uncertain"), default="all")
+    ap.add_argument("--llm", action="store_true", help="규칙 vs 규칙+기간·기준값 LLM 비교")
+    ap.add_argument("--cases", type=Path, help="다른 질문 파일(JSONL)로 채점 (예: 처음 보는 질문, 기준일 2026-11-09)")
+    ap.add_argument("--exclude", default="", help="뺄 id, 쉼표로 구분")
     ap.add_argument("--save", action="store_true", help="eval/golden/runs/에 결과 저장")
     args = ap.parse_args()
-    result = run(args.split)
+    items = as_of = None
+    if args.cases:
+        exclude = tuple(x.strip() for x in args.exclude.split(",") if x.strip())
+        items, as_of = load_extra_items(args.cases, exclude=exclude)
+    result = run(args.split, items=items, as_of=as_of)
     print(markdown(result))
+    if args.llm:
+        if config.USE_FAKE_LLM:
+            raise SystemExit("--llm은 .env에 LLM_BASE_URL이 있어야 해요")
+        llm = run(args.split, items=items, as_of=as_of, use_llm=True)
+        print("\n## 규칙+LLM (기간·기준값)\n")
+        print(markdown(llm))
+        fixed = [x["id"] for x, y in zip(result["rows"], llm["rows"]) if x["params_ok"] is False and y["params_ok"]]
+        broke = [x["id"] for x, y in zip(result["rows"], llm["rows"]) if x["params_ok"] and y["params_ok"] is False]
+        print(f"\nLLM이 고친 인자 {len(fixed)}개: {', '.join(fixed)}")
+        print(f"LLM이 새로 틀린 인자 {len(broke)}개: {', '.join(broke)}")
+        result = llm
     wrong = [x for x in result["rows"] if x["scored"] and (not x["intent_ok"] or x["tool_ok"] is False)]
     print(f"\n틀린 문항 {len(wrong)}개")
     for x in wrong[:40]:

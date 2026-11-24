@@ -16,7 +16,7 @@ from .. import config
 from .. import calc_rules
 from ..fake_data import HR_RECORDS
 from ..masking import mask_answer, mask_text, pseudonymize
-from . import conf_doc
+from . import conf_doc, llm_classify
 from . import retriever
 from .admin_classify import classify_admin_state
 from .state import HRState
@@ -48,6 +48,33 @@ def question_text(s: HRState) -> str:
 
 # ───────────── classify: 의도 분류 (규칙) ─────────────
 _SENSITIVE = ["괴롭힘", "성희롱", "성추행", "폭언", "고충", "따돌림", "부당"]   # 징계는 규정 질문이 많아 민감 단어에서 뺌
+# 피해 호소: 단어("따돌림")가 아니라 표현("저를 따돌리는", "일부러 피하고", "큰소리로 위협해")으로 알아봐요
+_VICTIM_EXPR = re.compile(
+    r"따돌리|왕따"
+    r"|(?:저를|제가|저한테|저에게|저만|절)\s*[^.?!]{0,12}?(?:무시|피하|피해|빼\s*(?:고|요|서|버)|험담|욕|모욕|위협|협박|괴롭|차별|비웃)"
+    r"|제\s*의견\s*(?:만|을|은)?\s*무시"
+    r"|일부러\s*피하|정보를\s*공유하지\s*않|(?:대화방|단톡방|회식|모임)에서(?:도)?\s*(?:저를\s*)?빼"
+    r"|큰소리|인신공격|욕설|모욕적|위협(?:해|하|을)|협박"
+    r"|사적인\s*메시지|개인적인\s*만남|성적\s*(?:농담|발언|수치)|스토킹|신체\s*접촉"
+    r"|두려워|무서워|불안(?:하|해|합)|억울(?:해|하|합)|우울|잠을\s*(?:못|잘\s*수)|출근하기\s*싫|죽고\s*싶"
+)
+# 민감 단어가 있어도 피해를 말하지 않고 규정·절차만 묻는 말은 일반 규정 질문 ("괴롭힘 신고 절차가 어떻게 돼?")
+_RULE_ONLY_ASK = re.compile(r"절차|규정|기준|방법|조항|제\s?\d+\s?조|뭐야|무엇|어떻게\s*(?:돼|되|처리)|담당|창구|기한")
+_VICTIM_MARKER = re.compile(
+    r"당했|당한|당하고|겪|들었|받았|받고\s*있|저를|제가|저한테|저에게|내가|나를|힘들|괴로|두렵|두려|불안|억울|우울|무서"
+    r"|상담(?:을)?\s*(?:받고|하고)\s*싶|신고하고\s*싶|고민"
+)
+
+
+def _sensitive_kind(q: str) -> str | None:
+    """"sensitive": 괴롭힘·성희롱·폭언 등 피해·고충을 말함 (민감 단어 + 피해 표현, 또는 단어 없이 피해 호소 표현).
+    "rule": 민감 단어가 있어도 피해 표현 없이 규정·절차만 물음 → 일반 규정 질문. None: 해당 없음.
+    '징계'는 일부러 민감 단어가 아님."""
+    if any(w in q for w in _SENSITIVE):
+        return "rule" if _RULE_ONLY_ASK.search(q) and not _VICTIM_MARKER.search(q) else "sensitive"
+    return "sensitive" if _VICTIM_EXPR.search(q) else None
+
+
 _OTHER_PERSON = ["다른 직원", "다른 사람", "남의 ", "옆팀", "옆 팀"]
 _TITLE = r"(?:사원|주임|대리|과장|차장|부장|팀장|본부장|님|씨)"
 _PRIVATE = r"(?:연봉|급여|월급|연차|수당|평가|인사고과|주민번호|계좌|주소|전화번호|휴직)"
@@ -148,6 +175,19 @@ def has_question_content(question: str) -> bool:
     return not _NO_QUESTION_CONTENT.fullmatch(_intent_question(question))
 
 
+# 로그인과 다른 사번으로 자기소개만 하는 문장 ("제 사번은 E1327입니다.", "E1682 / 기획팀 / 정유진").
+# 사번이 토큰과 달라 [사번](타인)으로 가려지지만 요청이 없으니 거절 대신 질문 없음으로 봐요.
+_SELF_DECLARED_OTHER_ID = re.compile(r"((?:제|내|저의|나의)\s*사번\s*(?:은|는|이|가)?\s*)\[사번\]")
+_ID_CARD = re.compile(r"^\s*\[사번\](?:\s*[/,|·]\s*[^\s/,|·?]+(?:\s[^\s/,|·?]+)?){1,3}\s*[.!]*\s*$")
+
+
+def _only_self_introduction(q: str) -> bool:
+    if _ID_CARD.match(q):
+        rest = re.sub(r"\[[^\]]+\]", "", q)      # 태그 안의 '사번' 글자는 빼고 봐요
+        return not any(w in rest for w in _HR_WORDS)
+    return not has_question_content(_SELF_DECLARED_OTHER_ID.sub(r"\1[본인사번]", q))
+
+
 def _classify_signals(s: HRState) -> tuple[bool, bool, bool, bool]:
     q = s["masked_question"]
     intent_q = _intent_question(q)
@@ -170,8 +210,11 @@ def _classify_rule(s: HRState) -> HRState:
     intent_q = _intent_question(q)
     other_id = s.get("has_other_emp_id", False) or "[사번]" in q
     is_self, has_tool, future_application_only, asks_rule = _classify_signals(s)
-    if any(w in q for w in _SENSITIVE):
-        intent = "sensitive"
+    sensitive = _sensitive_kind(q)
+    if sensitive:
+        intent = sensitive         # "sensitive" 또는 규정만 묻는 말("rule")
+    elif other_id and _only_self_introduction(q):
+        intent = "no_question"     # 다른 사번으로 자기소개만 (요청 없음)
     elif other_id or any(w in q for w in _OTHER_PERSON) or _OTHER_NAME.search(q):
         intent = "refuse"          # 타인 조회·권한 밖
     elif _OTHER_ORG.search(intent_q) or (
@@ -189,16 +232,35 @@ def _classify_rule(s: HRState) -> HRState:
 
 
 def classify(s: HRState) -> HRState:
-    """0. 보안문서(노사회의록·징계회의록)가 필요한 질문인지 먼저 표시 → 1. 의도 분류 (임직원·인사팀 공통)"""
-    conf = conf_doc.detect(question_text(s))
+    """0. 보안문서(노사회의록·징계회의록)가 필요한 질문인지 먼저 표시 → 1. 의도 분류 (임직원·인사팀 공통)
+
+    둘 다 규칙이 먼저 하고, 규칙이 약한 곳만 분류 보조 LLM에 물어요 (config.CLASSIFY_LLM 설명 참고)."""
+    conf = conf_doc.classify(question_text(s))
     return {**_classify_intent(s), **conf}
 
 
+# 규칙이 이 의도로 냈으면 LLM 의도를 따라요. 규칙이 자신 없을 때 가는 곳이라서예요 (인사 단어가 없으면 out_of_scope,
+# 본인·조회 신호가 없으면 rule). Colab 27B 처음 보는 질문: 66.0% → 79.6%, 새로 틀림 0 (기존 평가셋 95.2% → 94.5%)
+LLM_DECIDES = {"rule", "out_of_scope"}
+
+
 def _classify_intent(s: HRState) -> HRState:
-    """규칙 분류만 써요. LLM은 도구 호출 뒤 답변 생성(generate)에서만 불러요."""
     if s.get("role") == "hr_admin":                # 인사팀은 전용 분류 (역할은 토큰에서)
         return classify_admin_state(s)
-    return _classify_rule(s)
+    rule = _classify_rule(s)
+    # ② 규칙이 이미 민감·거절로 정했거나 질문 내용이 없으면 LLM을 부르지 않아요
+    if (not llm_classify.enabled() or rule["intent"] in {"sensitive", "refuse"}
+            or not has_question_content(s["masked_question"])):
+        return rule
+    result = llm_classify.classify(question_text(s), date.today())
+    if result is None:
+        log.warning("분류 보조 LLM 호출에 실패해 규칙 결과만 씁니다")
+        return rule
+    if result["intent"] in {"sensitive", "refuse"}:   # 규칙이 놓친 민감·타인 조회 보완
+        return {"intent": result["intent"]}
+    if rule["intent"] in LLM_DECIDES:                # 규칙이 rule·out_of_scope면 LLM 의도를 따름
+        return {"intent": result["intent"], "classifier_calc": result["calc"]}
+    return {**rule, "classifier_calc": result["calc"]}   # 규칙이 lookup·both로 정했으면 그대로
 
 
 # ───────────── lookup: 본인 조회 ─────────────
@@ -331,9 +393,104 @@ def _hours(question: str) -> tuple[float, float, float] | None:
         return None
 
 
+def _calc_from_classifier(calc: dict, chunks: list, question: str) -> dict | None:
+    kind = calc["type"]
+    slots = calc["slots"]
+    if kind == "business_trip":
+        if not {"nights", "days", "region"} <= set(slots):
+            return None
+        nights, days = slots["nights"], slots["days"]
+        for chunk in chunks:
+            rates = chunk.get("rates")
+            if rates:
+                daily_allowance = rates["daily_allowance"] * days
+                meal_allowance = rates["meal_allowance"] * days
+                daily_total = daily_allowance + meal_allowance
+                lodging_total = rates["lodging_cap"] * nights
+                return {
+                    "daily_allowance": daily_allowance,
+                    "meal_allowance": meal_allowance,
+                    "daily_allowance_and_meal": daily_total,
+                    "lodging_cap": lodging_total,
+                    "maximum_total": daily_total + lodging_total,
+                }
+        return None
+
+    if kind == "annual_leave" and "service_years" in slots:
+        return {
+            "입력 부족": {
+                "필요한 값": "입사일(연·월·일)",
+                "안내": "연차는 회계연도 기준이라 입사 연도와 날짜가 있어야 계산할 수 있어요.",
+            }
+        }
+
+    rules = calc_rules.load_rules(config.RULES_PATH)
+    if rules is None:
+        return None
+    if kind == "annual_leave":
+        hire_date = slots.get("hire_date")
+        as_of = slots.get("as_of")
+        if not hire_date or not as_of:
+            return None
+        return calc_rules.annual_leave(hire_date, as_of, rules)
+    if kind == "overtime":
+        if (
+            "ordinary_wage" in slots
+            and "통상임금" not in question
+            and any(label in question for label in ("기본급", "월급"))
+        ):
+            slots = dict(slots)
+            slots["base_pay"] = slots.pop("ordinary_wage")
+        hour_slots = ("overtime_hours", "night_hours", "holiday_hours")
+        if "ordinary_wage" in slots:
+            if not any(key in slots for key in hour_slots):
+                return None
+            return calc_rules.overtime_pay(
+                slots["ordinary_wage"],
+                slots.get("overtime_hours", 0),
+                slots.get("night_hours", 0),
+                slots.get("holiday_hours", 0),
+                rules,
+            )
+        if "base_pay" in slots and any(key in slots for key in hour_slots):
+            excess = calc_rules.holiday_hours_excess(
+                slots.get("holiday_hours", 0), rules
+            )
+            if excess is not None:
+                return excess
+            ordinary = rules.get("ordinary_wage", {})
+            overtime = rules.get("overtime", {})
+            if (
+                isinstance(ordinary, dict)
+                and isinstance(ordinary.get("_status"), str)
+                and isinstance(overtime, dict)
+                and "monthly_hours" in overtime
+            ):
+                return {
+                    "입력 부족": {
+                        "필요한 값": "통상임금",
+                        "통상임금 구성": ordinary["_status"],
+                        "시간급 계산식": (
+                            f"통상임금 ÷ 월 소정근로시간 ({overtime['monthly_hours']}시간)"
+                        ),
+                    }
+                }
+        return None
+    if kind == "family_allowance":
+        if not {"grade", "family"} <= set(slots):
+            return None
+        return calc_rules.family_allowance(slots["grade"], slots["family"], rules)
+    return None
+
+
 def calc(s: HRState) -> HRState:
     """출장비: 근거에 단가(rates)가 있으면 박·일수로 계산. TODO: 기준표(rules.json) 기반 계산 함수로 확장 (수당, 경조휴가 등)"""
     question = question_text(s)
+    classifier_calc = s.get("classifier_calc")
+    if config.CALC_TOOLS and isinstance(classifier_calc, dict):
+        result = _calc_from_classifier(classifier_calc, s.get("chunks", []), question)
+        if result is not None:
+            return {"calc": result}
     trip = re.search(r"(\d+)\s*박\s*(\d+)\s*일", question)
     if "출장" in question and trip:
         nights, days = (int(value) for value in trip.groups())

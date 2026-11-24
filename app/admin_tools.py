@@ -216,16 +216,23 @@ def hr_events(event_type: str, start: date, end: date, limit: int = 100) -> dict
 
 
 # ───────────── 교육 ─────────────
-def training_incomplete(year: int | None = None, course_type: str = "법정", limit: int = 100) -> dict:
-    """필수 교육 미이수자 명단 (과정별). course_type: 법정 / 직무 / 승진 / 신규 / 리더십. [74, 82]"""
+def training_incomplete(year: int | None = None, course_type: str = "법정", course_name: str | None = None,
+                        limit: int = 100) -> dict:
+    """필수 교육 미이수자 명단 (과정별). course_type: 법정 / 직무 / 승진 / 신규 / 리더십. [74, 77, 82]
+    course_name을 주면 그 과정(띄어쓰기 무시)의 대상자 중 미이수자만 봐요 ("기관사 보수교육"). 이때 구분·필수 여부는 안 따져요."""
     year = year or _latest_year("training")
-    where = (f"FROM hr.training t JOIN hr.employees e ON e.emp_id = t.emp_id {_DEPT} "
-             f"WHERE t.year = %s AND t.course_type = %s AND t.required = 'Y' AND t.status <> '이수' AND {_ACTIVE}")
-    total = db.fetch_one(f"SELECT count(*) AS n {where}", (year, course_type))["n"]
+    base = f"FROM hr.training t JOIN hr.employees e ON e.emp_id = t.emp_id {_DEPT} WHERE t.year = %s AND t.status <> '이수' AND {_ACTIVE}"
+    if course_name:
+        where, args, cond = (base + " AND replace(t.course_name, ' ', '') LIKE %s",
+                             (year, "%" + course_name.replace(" ", "") + "%"), {"연도": year, "과정": course_name})
+    else:
+        where, args, cond = (base + " AND t.course_type = %s AND t.required = 'Y'",
+                             (year, course_type), {"연도": year, "교육구분": course_type})
+    total = db.fetch_one(f"SELECT count(*) AS n {where}", args)["n"]
     rows = db.fetch_all(f"SELECT e.emp_id, e.name, d.dept_name, e.grade, t.course_name, t.status {where} "
-                        "ORDER BY t.course_name, d.dept_name, e.emp_id LIMIT %s", (year, course_type, limit))
+                        "ORDER BY t.course_name, d.dept_name, e.emp_id LIMIT %s", (*args, limit))
     out = [{**_person(r), "과정": r["course_name"], "상태": r["status"]} for r in rows]
-    return _result({"연도": year, "교육구분": course_type}, out, total)
+    return _result(cond, out, total)
 
 
 def dept_training_rate(year: int | None = None, course_type: str = "법정") -> dict:
