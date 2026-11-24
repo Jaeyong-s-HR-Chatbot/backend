@@ -18,11 +18,12 @@ def doc(category="노사", level="L2", kind="회의록"):
     }
 
 
-def segment(article, text, *, entities=None, speaker=None, sen=None, chunk_type="항목"):
+def segment(article, text, *, entities=None, speaker=None, sen=None, chunk_type="항목",
+            level="L2", review_required=False):
     return {
         "seq": 1, "article": article, "chunk_type": chunk_type, "text": text,
-        "speaker_label": speaker, "level": "L2", "entities": entities or [],
-        "og": [], "pos": [], "qi": [], "sen": sen,
+        "speaker_label": speaker, "level": level, "entities": entities or [],
+        "og": [], "pos": [], "qi": [], "sen": sen, "review_required": review_required,
     }
 
 
@@ -120,6 +121,35 @@ def test_transcript_sections_and_speaker_redaction(api):
     assert [section["heading"] for section in data["sections"]] == ["회의 정보", "발언"]
     assert "가상인" not in json.dumps(data, ensure_ascii=False)
     assert data["redacted_count"] == 1
+
+
+def test_nli_level_survives_preview_and_hides_entire_utterance(api):
+    client, state = api
+    state["doc"] = doc("노사", "L2", "녹취록")
+    state["segments"] = [
+        segment("발언 1", "가상 기밀 발언", speaker="위원 가상", chunk_type="발언",
+                level="L3", review_required=True)
+    ]
+    response = get(client, "E1422")
+    assert response.status_code == 200
+    body = response.json()
+    assert "가상 기밀 발언" not in json.dumps(body, ensure_ascii=False)
+    assert "위원 가상" not in json.dumps(body, ensure_ascii=False)
+    assert body["sections"][0]["blocks"][0]["segments"] == [{"redacted": True, "level": 3}]
+
+
+def test_unreviewed_high_level_preview_retains_old_masking(api):
+    client, state = api
+    state["segments"] = [
+        segment("보고사항", "가상인 참석", level="L4", entities=[
+            {"field": "text", "type": "PS", "start": 0, "end": 3, "text": "가상인"}
+        ])
+    ]
+    response = get(client, "E1422")
+    assert response.status_code == 200
+    assert response.json()["sections"][0]["blocks"][0]["segments"] == [
+        {"redacted": True, "level": 3}, {"text": " 참석"},
+    ]
 
 
 def test_forbidden_status_not_found_and_forged_role(api):

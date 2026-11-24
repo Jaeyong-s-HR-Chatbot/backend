@@ -22,7 +22,8 @@ def segment(doc_id, article, text, name=None):
     return {
         "chunk_id": f"{doc_id}-{article}", "doc_id": doc_id, "chunk_type": "항목", "article": article,
         "speaker_label": None, "text": text, "level": "L2", "entities": entities,
-        "og": [], "pos": [], "qi": [], "sen": None, "masked_text": text.replace(name, "[이름]") if name else text,
+        "og": [], "pos": [], "qi": [], "sen": None, "review_required": False,
+        "masked_text": text.replace(name, "[이름]") if name else text,
     }
 
 
@@ -77,13 +78,18 @@ def setup(monkeypatch):
             if "FROM conf.documents WHERE" in sql:
                 return Rows([d for d in docs if d["category"] == params[0]])
             if "FROM conf.chunks_masked m" in sql or "FROM conf.segments s" in sql:
-                full, subject, allowed = params[:3]
-                eligible = [s for s in segments if s["doc_id"] in full
-                            or (s["doc_id"] in subject and s["article"] in allowed)]
+                full, masked, subject, allowed = params[:4]
+                eligible = [
+                    s for s in segments
+                    if s["doc_id"] in full
+                    or (s["doc_id"] in masked and not s["review_required"])
+                    or (s["doc_id"] in subject and s["article"] in allowed)
+                ]
                 if "FROM conf.segments s" in sql:
-                    eligible = [s for s in eligible if s["chunk_id"] in params[3]]
+                    eligible = [s for s in eligible if s["chunk_id"] in params[4]]
                     return Rows(eligible)
-                    assert "m.doc_id = ANY(%s)" in sql and "m.article = ANY(%s)" in sql
+                assert "m.doc_id = ANY(%s)" in sql and "m.article = ANY(%s)" in sql
+                assert "m.review_required = false" in sql
                 return Rows([{**s, "has_embedding": False, "title": next(d["title"] for d in docs if d["doc_id"] == s["doc_id"])}
                              for s in eligible])
             raise AssertionError("unexpected SQL")
@@ -127,6 +133,22 @@ def test_labor_roles_get_appropriate_evidence(setup, emp, expected):
     assert state["documents"] and all(doc["view"] == expected for doc in state["documents"])
     if emp == "E1422":
         assert "가상노무" not in state["answer"]
+
+
+def test_masked_search_filters_review_flag_not_chunk_level(setup):
+    _, segments = setup
+    doc_id = "labor-2026-q4-minutes"
+    ordinary = segment(doc_id, "보고사항", "가상키워드 일반 내용")
+    ordinary["level"] = "L4"
+    reviewed = segment(doc_id, "협의사항", "가상키워드 검토 내용")
+    reviewed["review_required"] = True
+    segments.extend([ordinary, reviewed])
+
+    masked = conf_retriever.search("E1422", conf_doc.LABOR_MINUTES, "4분기 가상키워드")
+    assert [chunk["id"] for chunk in masked["chunks"]] == [ordinary["chunk_id"]]
+    assert masked["chunks"][0]["text"] == ordinary["text"]
+    full = conf_retriever.search("E1707", conf_doc.LABOR_MINUTES, "4분기 가상키워드")
+    assert {chunk["id"] for chunk in full["chunks"]} == {ordinary["chunk_id"], reviewed["chunk_id"]}
 
 
 def test_non_conf_rule_remains_existing_route(setup, monkeypatch):

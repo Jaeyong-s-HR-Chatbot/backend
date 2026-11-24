@@ -10,3 +10,8 @@ data/
 *.jsonl
 confidential/rules/org_counts.csv
 models/
+/nli_model/
+/nli_colab/
+/nli_finetune.ipynb
+/nli_labels.tsv
+/train_sentences.tsv

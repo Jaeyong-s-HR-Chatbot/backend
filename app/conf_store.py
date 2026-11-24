@@ -91,7 +91,7 @@ def read_document(doc_id):
             def segments():
                 return conn.execute(
                     """SELECT seq, chunk_type, article, speaker_label, text, level,
-                        entities, og, pos, qi, sen
+                        entities, og, pos, qi, sen, review_required
                         FROM conf.segments WHERE doc_id = %s ORDER BY seq""",
                     (doc_id,),
                 ).fetchall()

@@ -88,7 +88,7 @@ def sample():
             {"field": "speaker_label", "type": "PS", "start": 3, "end": 6, "text": "가상인"},
         ],
         "og": [["OG", 0, 4, "가상부서"]], "pos": [["POS", 5, 9, "가상직급"]],
-        "qi": [["가상부서", "가상직급", 1, True]], "sen": None,
+        "qi": [["가상부서", "가상직급", 1, True]], "sen": None, "review_required": False,
     }
 
 
@@ -104,6 +104,31 @@ def test_sensitive_chunk_is_entirely_redacted():
     segment = sample()
     segment["sen"] = "건강"
     assert segment_view("masked", segment) == [{"redacted": True, "level": 3}]
+
+
+def test_nli_elevated_segment_is_hidden_from_masked_access():
+    segment = sample()
+    segment["review_required"] = True
+    segment["level"] = "L3"
+    assert segment_view("masked", segment) == [{"redacted": True, "level": 3}]
+    segment["level"] = "L4"
+    assert segment_view("masked", segment) == [{"redacted": True, "level": 4}]
+
+
+def test_masked_unreviewed_high_level_uses_existing_partial_masking():
+    segment = sample()
+    segment["level"] = "L4"
+    result = segment_view("masked", segment)
+    assert {"text": "위원 "} in result
+    assert len(result) > 1
+    assert "가상인" not in str(result)
+
+
+def test_invalid_review_status_fails_closed():
+    segment = sample()
+    segment["review_required"] = None
+    with pytest.raises(ValueError):
+        segment_view("masked", segment)
 
 
 def test_subject_full_and_other_segments():

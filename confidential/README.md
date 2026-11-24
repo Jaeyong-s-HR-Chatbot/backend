@@ -7,9 +7,14 @@ PDF를 원본 조각(`conf.segments`)과 가린 검색용 사본(`conf.chunks_ma
 - `CONF_PDF_DIR`: PDF 폴더. 비우면 작업 폴더의 `raw`를 사용합니다.
 - `CONF_WORK_DIR`: 중간 결과 폴더. 비우면 `backend/data/conf`를 사용합니다.
 - `NER_MODEL_DIR`: NER 모델 이름 또는 로컬 경로. 비우면 `soddokayo/klue-roberta-base-ner`를 사용합니다.
+- `NLI_ENABLED`: `true`이면 발언별 NLI 기밀 판정을 켭니다. 기본값은 `false`입니다.
+- `NLI_MODEL_DIR`: 미세조정한 mDeBERTa 모델의 로컬 폴더 경로입니다. NLI가 켜져 있을 때 필수입니다.
 - `HRDB_URL`: 부서·직급별 인원 조회에 필요합니다. `--dry-run`에서도 읽기 전용으로 조회합니다.
 
-관리자 승인 후 `scripts/create_conf_schema.sql`과 `scripts/alter_conf_upload.sql`을 적용하고 아래 명령으로 적재합니다.
+관리자 승인 후 `scripts/create_conf_schema.sql`, `scripts/alter_conf_upload.sql`,
+`scripts/alter_conf_nli.sql`을 적용하고 아래 명령으로 적재합니다.
+**NLI 활성화 여부와 관계없이 적재 전에 `scripts/alter_conf_nli.sql` 적용이 필수입니다.**
+기밀문서 미리보기와 검색에도 이 마이그레이션이 필요합니다.
 기존 문서의 빈 업로드 정보는 별도 승인 후 `python -m scripts.backfill_conf_upload`로 채웁니다.
 파일 크기는 `CONF_PDF_DIR`에서 확인하고 파일이 없으면 0으로 기록합니다.
 
@@ -25,6 +30,13 @@ python -m confidential.check_ingest --names <저장소_밖_이름_목록>
 이 폴더와 모델 파일, PDF, 이름 목록은 Git에 추가하지 마세요. NER의 최대 입력 길이를 초과하는
 조각은 마스킹을 생략하지 않고 처리 자체를 중단합니다. 각 문서의 DB 저장은 독립 트랜잭션이며,
 같은 문서를 다시 적재하면 해당 문서의 기존 조각을 교체합니다.
+
+NLI를 활성화하면 NER·규칙 마스킹 후 원문 발언을 미세조정 모델로 분류합니다. 기밀로
+판정된 발언은 조각 등급을 최소 L3로 올리고 담당자 검토 표시를 남깁니다. 모델을
+불러오거나 추론하지 못하면 해당 문서 적재를 실패 처리합니다. 판정 점수와 유형은
+`conf.segments.nli_findings`에 저장하고, 검토 여부는 원문·검색 조각에 함께 저장합니다.
+검토 표시가 있는 조각은 일반 masked 미리보기에서 전체 가리고 검색 후보에서 제외합니다.
+마이그레이션 SQL은 관리자 승인 후에만 적용하세요.
 
 기밀문서 목록은 징계·노사 담당자와 시스템 관리자에게만, 업로드·삭제는 각 분류의
 담당자에게만 허용합니다. 등록된 PDF만 업로드할 수 있으며 처리 중 재업로드·삭제는

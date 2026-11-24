@@ -9,7 +9,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from app import config
-from . import conf_build, conf_mask, embedding, ner_model
+from . import conf_build, conf_mask, embedding, ner_model, nli_classifier
 
 HERE = Path(__file__).parent
 
@@ -45,6 +45,27 @@ def prepare_document(pdf_path, meta, model, counts):
         raise ValueError("PDF에서 조각을 찾지 못해 적재를 중단합니다")
     tok, ner = model
     pairs = [(chunk, conf_mask.mask_chunk(chunk, tok, ner, counts)) for chunk in chunks]
+    if config.NLI_ENABLED:
+        speech = [(index, chunk) for index, (chunk, _) in enumerate(pairs)
+                  if chunk["chunk_type"] == "발언"]
+        previous = []
+        prior_text = ""
+        for _, chunk in speech:
+            previous.append(prior_text)
+            prior_text = chunk["text"]
+        findings = nli_classifier.classify_utterances(
+            [chunk["text"] for _, chunk in speech], previous,
+        )
+        for (index, _), finding in zip(speech, findings):
+            masked = pairs[index][1]
+            masked["nli_findings"] = [finding]
+            masked["review_required"] = finding["confidential"]
+            level = int(meta["level"][1])
+            masked["level"] = f"L{max(level, 3)}" if finding["confidential"] else meta["level"]
+    for _, masked in pairs:
+        masked.setdefault("nli_findings", [])
+        masked.setdefault("review_required", False)
+        masked.setdefault("level", meta["level"])
     return doc, pairs
 
 
@@ -85,22 +106,24 @@ def write_document(conn, meta, pairs, embeddings=None):
             conn.execute(
                 """INSERT INTO conf.segments
                 (chunk_id, doc_id, seq, chunk_type, article, page, speaker_code, speaker_label,
-                 text, level, entities, og, pos, qi, sen)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                 text, level, entities, og, pos, qi, sen, nli_findings, review_required)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (chunk["chunk_id"], meta["id"], seq, chunk["chunk_type"], chunk["article"],
-                 chunk["page"], chunk.get("speaker"), chunk.get("speaker_label"), chunk["text"],
-                 meta["level"], Jsonb(_entity_rows(masked)), Jsonb(masked["og"]),
-                 Jsonb(masked["pos"]), Jsonb(masked["qi"]), masked["sen"]),
+                 chunk.get("page"), chunk.get("speaker"), chunk.get("speaker_label"), chunk["text"],
+                 masked["level"], Jsonb(_entity_rows(masked)), Jsonb(masked["og"]),
+                 Jsonb(masked["pos"]), Jsonb(masked["qi"]), masked["sen"],
+                 Jsonb(masked["nli_findings"]), masked["review_required"]),
             )
             conn.execute(
                 """INSERT INTO conf.chunks_masked
                 (chunk_id, doc_id, seq, chunk_type, article, speaker_masked, masked_text,
-                 level, sen, allowed_roles, embedding, tsv)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, to_tsvector('simple', %s))""",
+                 level, sen, allowed_roles, embedding, tsv, review_required)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, to_tsvector('simple', %s), %s)""",
                 (chunk["chunk_id"], meta["id"], seq, chunk["chunk_type"], chunk["article"],
-                 masked.get("speaker_masked"), masked["masked"], meta["level"], masked["sen"],
+                 masked.get("speaker_masked"), masked["masked"], masked["level"], masked["sen"],
                  meta.get("allowed_roles", []),
-                 embedding.literal(embeddings[index]) if embeddings is not None else None, masked["masked"]),
+                 embedding.literal(embeddings[index]) if embeddings is not None else None, masked["masked"],
+                 masked["review_required"]),
             )
         conn.execute("UPDATE conf.documents SET status = 'ready' WHERE doc_id = %s", (meta["id"],))
 
@@ -139,6 +162,7 @@ def ingest_document(pdf_path, meta, *, model=None, counts=None, conn=None, dry_r
         "entities": sum(len(m["entities"]) + len(m.get("speaker_entities", [])) for _, m in pairs),
         "qi_masked": sum(sum(bool(q[3]) for q in m["qi"]) for _, m in pairs),
         "sensitive": sum(bool(m["sen"]) for _, m in pairs),
+        "nli_review": sum(bool(m["review_required"]) for _, m in pairs),
     }
 
 

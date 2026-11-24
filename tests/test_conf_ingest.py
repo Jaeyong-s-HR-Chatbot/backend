@@ -25,12 +25,13 @@ class SQLiteConnection:
             CREATE TABLE conf.segments (
                 chunk_id TEXT PRIMARY KEY, doc_id TEXT, seq INTEGER, chunk_type TEXT, article TEXT,
                 page INTEGER, speaker_code TEXT, speaker_label TEXT, text TEXT, level TEXT,
-                entities TEXT, og TEXT, pos TEXT, qi TEXT, sen TEXT
+                entities TEXT, og TEXT, pos TEXT, qi TEXT, sen TEXT,
+                nli_findings TEXT, review_required INTEGER
             );
             CREATE TABLE conf.chunks_masked (
                 chunk_id TEXT PRIMARY KEY, doc_id TEXT, seq INTEGER, chunk_type TEXT, article TEXT,
                 speaker_masked TEXT, masked_text TEXT, level TEXT, sen TEXT, allowed_roles TEXT,
-                embedding TEXT, tsv TEXT
+                embedding TEXT, tsv TEXT, review_required INTEGER
             );
             """
         )
@@ -163,6 +164,114 @@ def test_sensitive_subject_department_keeps_sensitive_mask(monkeypatch):
     )
     chunk = {"chunk_id": "test-1", "chunk_type": "항목", "article": "징계대상자 소속", "text": "민감 내용"}
     assert conf_mask.mask_chunk(chunk, None, None, {})["masked"] == "[민감정보]"
+
+
+def test_nli_raises_speech_level_and_persists_findings(tmp_path, monkeypatch, doc):
+    monkeypatch.setattr(ingest.embedding, "encode", lambda _texts: None)
+    monkeypatch.setattr(ingest.config, "NLI_ENABLED", True)
+    doc["level"] = "L2"
+    pdf = tmp_path / "test.pdf"
+    pdf.touch()
+    chunks = [
+        {"chunk_id": "test-document-0001", "chunk_type": "발언", "article": "발언 1",
+         "page": 1, "text": "기밀 발언입니다.", "speaker_label": "위원 가상"},
+        {"chunk_id": "test-document-0002", "chunk_type": "회의정보", "article": "회의일자",
+         "page": 1, "text": "2026-01-01"},
+    ]
+    monkeypatch.setattr(conf_build, "build_doc", lambda *_args: chunks)
+    monkeypatch.setattr(
+        conf_mask, "mask_chunk",
+        lambda chunk, *_args: {
+            "entities": [], "og": [], "pos": [], "qi": [], "sen": None, "masked": "[가린 발언]",
+            "speaker_masked": "위원 [이름]", "speaker_entities": [],
+        },
+    )
+    seen = {}
+
+    def classify(texts, previous):
+        seen["texts"] = texts
+        seen["previous"] = previous
+        return [{"confidential": True, "score": 0.99, "type": "C4", "progress_score": 0.2}]
+
+    monkeypatch.setattr(ingest.nli_classifier, "classify_utterances", classify)
+    conn = SQLiteConnection()
+    try:
+        ingest.ingest_document(pdf, doc, model=(None, None), counts={}, conn=conn)
+        assert seen == {"texts": ["기밀 발언입니다."], "previous": [""]}
+        segment_row = conn.db.execute(
+            "SELECT level, nli_findings, review_required FROM conf.segments WHERE chunk_id = ?",
+            ("test-document-0001",),
+        ).fetchone()
+        masked_row = conn.db.execute(
+            "SELECT level, review_required FROM conf.chunks_masked WHERE chunk_id = ?",
+            ("test-document-0001",),
+        ).fetchone()
+        assert segment_row[0] == masked_row[0] == "L3"
+        findings = json.loads(segment_row[1])
+        assert findings == [{
+            "confidential": True, "score": 0.99, "type": "C4", "progress_score": 0.2,
+        }]
+        assert segment_row[2] == masked_row[1] == 1
+        plain_level = conn.db.execute(
+            "SELECT level, review_required FROM conf.chunks_masked WHERE chunk_id = ?",
+            ("test-document-0002",),
+        ).fetchone()
+        assert plain_level == ("L2", 0)
+    finally:
+        conn.db.close()
+
+
+def test_nli_disabled_keeps_existing_ingest_behavior(tmp_path, monkeypatch, doc):
+    monkeypatch.setattr(ingest.embedding, "encode", lambda _texts: None)
+    monkeypatch.setattr(ingest.config, "NLI_ENABLED", False)
+    monkeypatch.setattr(
+        ingest.nli_classifier, "classify_utterances",
+        lambda *_args: pytest.fail("disabled NLI must not load or classify"),
+    )
+    pdf = tmp_path / "test.pdf"
+    pdf.touch()
+    monkeypatch.setattr(conf_build, "build_doc", lambda *_args: [
+        {"chunk_id": "test-document-0001", "chunk_type": "발언", "article": "발언 1",
+         "page": 1, "text": "일반 발언"},
+    ])
+    monkeypatch.setattr(
+        conf_mask, "mask_chunk",
+        lambda *_args: {"entities": [], "og": [], "pos": [], "qi": [], "sen": None, "masked": "일반 발언"},
+    )
+    conn = SQLiteConnection()
+    try:
+        ingest.ingest_document(pdf, doc, model=(None, None), counts={}, conn=conn)
+        row = conn.db.execute(
+            "SELECT level, nli_findings, review_required FROM conf.segments"
+        ).fetchone()
+        assert row == ("L4", "[]", 0)
+    finally:
+        conn.db.close()
+
+
+def test_nli_failure_aborts_before_database_write(tmp_path, monkeypatch, doc):
+    monkeypatch.setattr(ingest.config, "NLI_ENABLED", True)
+    pdf = tmp_path / "test.pdf"
+    pdf.touch()
+    monkeypatch.setattr(conf_build, "build_doc", lambda *_args: [
+        {"chunk_id": "test-document-0001", "chunk_type": "발언", "article": "발언 1",
+         "page": 1, "text": "가상 발언"},
+    ])
+    monkeypatch.setattr(
+        conf_mask, "mask_chunk",
+        lambda *_args: {"entities": [], "og": [], "pos": [], "qi": [], "sen": None, "masked": "가린 내용"},
+    )
+    monkeypatch.setattr(
+        ingest.nli_classifier, "classify_utterances",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("model unavailable")),
+    )
+    conn = SQLiteConnection()
+    try:
+        with pytest.raises(RuntimeError, match="model unavailable"):
+            ingest.ingest_document(pdf, doc, model=(None, None), counts={}, conn=conn)
+        assert conn.db.execute("SELECT count(*) FROM conf.documents").fetchone()[0] == 0
+    finally:
+        conn.db.close()
 
 
 def test_empty_pdf_does_not_overwrite_existing_document(tmp_path, monkeypatch, doc):

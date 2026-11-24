@@ -64,11 +64,13 @@ def search(emp_id, conf_type, question):
         permitted = {doc_id: doc for doc_id, doc in authorized.items() if _period_match(question, doc)}
         if not permitted:
             return {"authorized": True, "chunks": [], "documents": [], "hidden": []}
-        full_ids = [doc_id for doc_id in permitted if modes[doc_id] != "subject"]
+        full_ids = [doc_id for doc_id in permitted if modes[doc_id] == "full"]
+        masked_ids = [doc_id for doc_id in permitted if modes[doc_id] == "masked"]
         subject_ids = [doc_id for doc_id in permitted if modes[doc_id] == "subject"]
         predicate = """(m.doc_id = ANY(%s) OR
+                       (m.doc_id = ANY(%s) AND m.review_required = false) OR
                        (m.doc_id = ANY(%s) AND m.article = ANY(%s)))"""
-        params = (full_ids, subject_ids, list(SUBJECT_ARTICLES))
+        params = (full_ids, masked_ids, subject_ids, list(SUBJECT_ARTICLES))
         rows = conn.execute(
             f"""SELECT m.chunk_id, m.doc_id, m.article, m.masked_text, d.title,
                        m.embedding IS NOT NULL AS has_embedding
@@ -99,7 +101,7 @@ def search(emp_id, conf_type, question):
             return {"authorized": True, "chunks": [], "documents": [], "hidden": []}
         segments = conn.execute(
             f"""SELECT s.chunk_id, s.doc_id, s.chunk_type, s.article, s.speaker_label,
-                       s.text, s.level, s.entities, s.og, s.pos, s.qi, s.sen
+                       s.text, s.level, s.entities, s.og, s.pos, s.qi, s.sen, s.review_required
                 FROM conf.segments s JOIN conf.chunks_masked m ON m.chunk_id = s.chunk_id
                 WHERE {predicate} AND s.chunk_id = ANY(%s)""", (*params, ids),
         ).fetchall()
@@ -110,7 +112,8 @@ def search(emp_id, conf_type, question):
     for chunk_id in ids:
         row = by_id[chunk_id]
         doc, mode = permitted[row["doc_id"]], modes[row["doc_id"]]
-        rendered = segment_view(mode, dict(row, level=doc["level"]))
+        item = dict(row, level=row["level"] if row["review_required"] else doc["level"])
+        rendered = segment_view(mode, item)
         text = "".join(part.get("text", "[가림]") for part in rendered)
         if mode != "full":
             hidden.extend((entity["text"], "[이름]" if entity.get("type") == "PS" else "[식별정보]")
