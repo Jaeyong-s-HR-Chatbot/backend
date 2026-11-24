@@ -17,6 +17,8 @@ def access(emp_id: str, roles: set[str], doc: dict) -> AccessMode:
     if (level not in {"L1", "L2", "L3", "L4"} or doc.get("category") not in CATEGORY_ROLES
             or doc.get("doc_kind") not in {"회의록", "녹취록"}):
         return "deny"
+    if doc["doc_kind"] == "녹취록" and level in {"L1", "L2"} and doc.get("nli_status") != "success":
+        level = "L3"
     allowed = doc.get("allowed_roles")
     participants = doc.get("participants")
     if not isinstance(allowed, list) or not all(isinstance(role, str) for role in allowed):

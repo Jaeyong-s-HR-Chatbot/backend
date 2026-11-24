@@ -53,7 +53,7 @@ def search(emp_id, conf_type, question):
         conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         docs = conn.execute(
             """SELECT doc_id, title, confidential, category, doc_kind, level, allowed_roles,
-                      subject_emp_id, participants
+                      subject_emp_id, participants, nli_status
                FROM conf.documents WHERE category = %s AND status = 'ready'""",
             (CATEGORIES[conf_type],),
         ).fetchall()

@@ -83,7 +83,7 @@ def read_document(doc_id):
             conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             doc = conn.execute(
                 """SELECT doc_id, title, confidential, doc_no, owner_dept, issued_at, status,
-                    doc_kind, category, level, allowed_roles, subject_emp_id, participants
+                    doc_kind, category, level, allowed_roles, subject_emp_id, participants, nli_status
                     FROM conf.documents WHERE doc_id = %s""",
                 (doc_id,),
             ).fetchone()

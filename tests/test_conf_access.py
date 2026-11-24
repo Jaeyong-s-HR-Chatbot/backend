@@ -17,13 +17,13 @@ ROLES = {
     "E1243": {"EMPLOYEE", "TEAM_LEAD"},
 }
 EXPECTED = {
-    "E1422": ["deny", "deny", "deny", "deny", "masked", "masked"],
-    "E1243": ["deny", "deny", "deny", "deny", "masked", "masked"],
-    "E1686": ["full", "full", "full", "deny", "masked", "masked"],
+    "E1422": ["deny", "deny", "deny", "masked", "masked", "masked"],
+    "E1243": ["deny", "deny", "deny", "masked", "masked", "masked"],
+    "E1686": ["full", "full", "full", "masked", "masked", "masked"],
     "E1707": ["deny", "deny", "deny", "full", "full", "full"],
     "E1622": ["deny", "deny", "deny", "deny", "deny", "deny"],
-    "E1545": ["deny", "subject", "deny", "deny", "masked", "masked"],
-    "E1007": ["full", "full", "deny", "deny", "masked", "masked"],
+    "E1545": ["deny", "subject", "deny", "masked", "masked", "masked"],
+    "E1007": ["full", "full", "deny", "masked", "masked", "masked"],
     "E1459": ["deny", "deny", "deny", "full", "full", "full"],
     "E1003": ["deny", "deny", "full", "full", "full", "full"],
 }
@@ -36,6 +36,7 @@ def documents():
             "doc_kind": d["doc_kind"], "category": d["category"], "level": d["level"],
             "allowed_roles": d.get("allowed_roles", []),
             "subject_emp_id": d.get("subject"), "participants": d.get("participants", []),
+            "nli_status": "success",
         }
         for d in CONF["documents"]
     }

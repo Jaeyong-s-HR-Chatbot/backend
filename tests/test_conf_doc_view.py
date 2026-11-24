@@ -14,7 +14,7 @@ def doc(category="노사", level="L2", kind="회의록"):
         "doc_id": "test-doc", "title": "가상 회의록", "confidential": True,
         "doc_no": "", "owner_dept": "", "issued_at": date(2026, 10, 22),
         "status": "ready", "doc_kind": kind, "category": category, "level": level,
-        "allowed_roles": [], "subject_emp_id": None, "participants": [],
+        "allowed_roles": [], "subject_emp_id": None, "participants": [], "nli_status": "success",
     }
 
 
@@ -136,6 +136,32 @@ def test_nli_level_survives_preview_and_hides_entire_utterance(api):
     assert "가상 기밀 발언" not in json.dumps(body, ensure_ascii=False)
     assert "위원 가상" not in json.dumps(body, ensure_ascii=False)
     assert body["sections"][0]["blocks"][0]["segments"] == [{"redacted": True, "level": 3}]
+
+
+@pytest.mark.parametrize("nli_status", ["not_run", "failed", None])
+def test_unverified_l2_transcript_is_denied_in_preview(api, nli_status):
+    client, state = api
+    state["doc"] = dict(doc("노사", "L2", "녹취록"), nli_status=nli_status)
+    state["segments"] = [segment("발언 1", "가상 내용", chunk_type="발언")]
+    assert get(client, "E1422").status_code == 403
+    assert state["read"] == 0
+    assert get(client, "E1707").status_code == 200
+
+
+def test_reviewed_and_unreviewed_utterances_in_masked_preview(api):
+    client, state = api
+    state["doc"] = doc("노사", "L2", "녹취록")
+    state["segments"] = [
+        segment("발언 1", "기밀 발언", chunk_type="발언", level="L3", review_required=True),
+        segment("발언 2", "가상인 참석", chunk_type="발언", entities=[
+            {"field": "text", "type": "PS", "start": 0, "end": 3, "text": "가상인"}
+        ]),
+    ]
+    response = get(client, "E1422")
+    assert response.status_code == 200
+    blocks = response.json()["sections"][0]["blocks"]
+    assert blocks[0]["segments"] == [{"redacted": True, "level": 3}]
+    assert blocks[1]["segments"] == [{"redacted": True, "level": 3}, {"text": " 참석"}]
 
 
 def test_unreviewed_high_level_preview_retains_old_masking(api):

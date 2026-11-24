@@ -36,7 +36,7 @@ def setup(monkeypatch):
             "doc_id": metadata["id"], "title": metadata["name"], "confidential": True,
             "category": metadata["category"], "doc_kind": metadata["doc_kind"], "level": metadata["level"],
             "allowed_roles": metadata.get("allowed_roles", []), "subject_emp_id": metadata.get("subject"),
-            "participants": metadata.get("participants", []),
+            "participants": metadata.get("participants", []), "nli_status": "success",
         }
         docs.append(d)
         if metadata["category"] == "징계":
@@ -149,6 +149,18 @@ def test_masked_search_filters_review_flag_not_chunk_level(setup):
     assert masked["chunks"][0]["text"] == ordinary["text"]
     full = conf_retriever.search("E1707", conf_doc.LABOR_MINUTES, "4분기 가상키워드")
     assert {chunk["id"] for chunk in full["chunks"]} == {ordinary["chunk_id"], reviewed["chunk_id"]}
+
+
+@pytest.mark.parametrize("nli_status", ["not_run", "failed", None])
+def test_unverified_l2_transcript_is_excluded_from_masked_search(setup, nli_status):
+    docs, segments = setup
+    docs[:] = [doc for doc in docs if doc["doc_id"] == "labor-2026-q4-transcript"]
+    docs[0]["nli_status"] = nli_status
+    segments[:] = [segment(docs[0]["doc_id"], "발언", "가상키워드 내용")]
+    result = conf_retriever.search("E1422", conf_doc.LABOR_MINUTES, "4분기 가상키워드")
+    assert result["authorized"] is False
+    assert result["chunks"] == []
+    assert conf_retriever.search("E1707", conf_doc.LABOR_MINUTES, "4분기 가상키워드")["chunks"]
 
 
 def test_non_conf_rule_remains_existing_route(setup, monkeypatch):
