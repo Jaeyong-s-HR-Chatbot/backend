@@ -4,7 +4,8 @@
 guard → classify ─┬─ rule ──────────────→ retrieve → calc → generate → verify ─┬─ 통과 → log
                   ├─ lookup ─→ lookup ─────────────────────→ generate          ├─ 근거 부족 → 다시 검색 (1회)
                   ├─ both ──→ lookup → retrieve                                 └─ 그래도 실패 → refuse → log
-                  ├─ sensitive → sensitive → log
+                  ├─ sensitive ─→ retrieve → calc → generate → verify → + 상담 창구 안내 → log
+                  │                 └ 근거를 못 찾으면 상담 창구 안내만
                   ├─ out_of_scope (인사 규정과 무관) → 안내 → log
                   └─ refuse (타인 조회) → refuse → log
 
@@ -24,6 +25,20 @@ from . import conf_chat
 from .state import HRState
 
 
+def _search_and_answer(s: HRState) -> None:
+    """검색 → 계산 → 생성 → 검증 (처음 1번 + 재검색 1번). s를 직접 갱신해요"""
+    for _ in range(n.MAX_RETRIES + 1):
+        s |= n.retrieve(s)
+        s |= n.calc(s)
+        s |= n.generate(s)
+        s |= n.normalize_no_evidence(s)
+        if s.get("kind") == "refused":
+            break
+        s |= n.verify(s)
+        if s["verified"]:
+            break
+
+
 def run_pipeline(employee_id: str, role: str, question: str, own_name: str = "") -> HRState:
     started = perf_counter()
     s: HRState = {
@@ -36,7 +51,10 @@ def run_pipeline(employee_id: str, role: str, question: str, own_name: str = "")
     s |= n.classify(s)
 
     if s["intent"] == "sensitive":
-        s |= n.sensitive(s)
+        # 피해·고충 호소도 규정 근거(신고 절차·보호 조치 등)를 찾아 답하고, 상담·신고 창구 안내를 붙여요.
+        # 근거를 못 찾으면 상담 창구 안내만. 로그는 [민감 주제 문의]로 가려요 (write_log)
+        _search_and_answer(s)
+        s |= n.finish_sensitive(s)
     elif s.get("refuse_reason") == "chat_log":
         s |= n.refuse(s)
     elif s.get("conf_doc"):
@@ -56,16 +74,7 @@ def run_pipeline(employee_id: str, role: str, question: str, own_name: str = "")
             s |= n.generate(s)
             s |= n.verify(s)
         else:
-            for _ in range(n.MAX_RETRIES + 1):          # 처음 1번 + 재검색 1번
-                s |= n.retrieve(s)
-                s |= n.calc(s)
-                s |= n.generate(s)
-                s |= n.normalize_no_evidence(s)
-                if s.get("kind") == "refused":
-                    break
-                s |= n.verify(s)
-                if s["verified"]:
-                    break
+            _search_and_answer(s)
             if not s.get("verified") and s.get("admin_result") is not None:
                 # 인사팀: 맞는 규정을 못 찾았어도 집계 표는 돌려줌 (단순 현황 질문은 원래 규정이 필요 없어요)
                 s |= {"chunks": [], "verified": True, "kind": "answer",

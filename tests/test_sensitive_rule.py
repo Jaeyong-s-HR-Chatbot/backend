@@ -25,6 +25,8 @@ def _intent(q: str) -> str:
     "징계 통보를 받았는데 억울해서 상담하고 싶어요",
     "성희롱을 당했는데 신고 절차와 상담 창구를 알려 주세요",       # 단어 + 피해 → 민감
     "팀장한테 폭언을 들었는데 어떻게 해?",
+    "팀장이 저한테 계속 성희롱해요",
+    "선배 폭언이 너무 심해요",
 ])
 def test_victim_expressions_are_sensitive(q):
     assert _intent(q) == "sensitive"
@@ -35,6 +37,8 @@ def test_victim_expressions_are_sensitive(q):
     "직장 내 성희롱 예방 규정이 뭐야?",
     "고충처리위원회 담당 부서가 어디야?",
     "징계위원회 개최 절차가 어떻게 돼?",                              # 징계는 민감 단어가 아님
+    "성희롱 예방교육 같은 법정교육 저도 다 들어야 해요?",              # 단어만 있고 피해 상황이 없음
+    "성희롱 예방교육 같은 법정교육은 1년에 몇 번 들어야 해요?",
 ])
 def test_rule_only_questions_stay_rule(q):
     assert _intent(q) == "rule"

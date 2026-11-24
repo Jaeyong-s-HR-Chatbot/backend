@@ -56,22 +56,23 @@ _VICTIM_EXPR = re.compile(
     r"|일부러\s*피하|정보를\s*공유하지\s*않|(?:대화방|단톡방|회식|모임)에서(?:도)?\s*(?:저를\s*)?빼"
     r"|큰소리|인신공격|욕설|모욕적|위협(?:해|하|을)|협박"
     r"|사적인\s*메시지|개인적인\s*만남|성적\s*(?:농담|발언|수치)|스토킹|신체\s*접촉"
-    r"|두려워|무서워|불안(?:하|해|합)|억울(?:해|하|합)|우울|잠을\s*(?:못|잘\s*수)|출근하기\s*싫|죽고\s*싶"
+    r"|두려워|무서워|불안(?:하|해|합)|억울(?:해|하|합)|우울|잠(?:을|도|이)?\s*(?:못|잘\s*수)|출근하기\s*싫|죽고\s*싶"
 )
-# 민감 단어가 있어도 피해를 말하지 않고 규정·절차만 묻는 말은 일반 규정 질문 ("괴롭힘 신고 절차가 어떻게 돼?")
-_RULE_ONLY_ASK = re.compile(r"절차|규정|기준|방법|조항|제\s?\d+\s?조|뭐야|무엇|어떻게\s*(?:돼|되|처리)|담당|창구|기한")
 _VICTIM_MARKER = re.compile(
-    r"당했|당한|당하고|겪|들었|받았|받고\s*있|저를|제가|저한테|저에게|내가|나를|힘들|괴로|두렵|두려|불안|억울|우울|무서"
-    r"|상담(?:을)?\s*(?:받고|하고)\s*싶|신고하고\s*싶|고민"
+    r"당했|당한|당하고|겪|들었|들은|받았|받은|받고\s*있|시달|저를|제가|저한테|저에게|내가|나를|힘들|괴로|두렵|두려|불안|억울|우울|무서"
+    r"|상담(?:을)?\s*(?:받고|하고)\s*싶|신고하고\s*싶|고민|누구(?:한테|에게)\s*(?:이야기|얘기|말)"
+    # 민감 단어 + 지금 겪는 일 ("팀장이 성희롱해요", "폭언이 너무 심해요")
+    r"|(?:괴롭|성희롱|성추행|폭언|따돌)[가-힣]*(?:\s+[가-힣]+){0,2}?\s*(?:해요|했|하는데|하고\s*있|해서|심해|심하)"
 )
 
 
 def _sensitive_kind(q: str) -> str | None:
     """"sensitive": 괴롭힘·성희롱·폭언 등 피해·고충을 말함 (민감 단어 + 피해 표현, 또는 단어 없이 피해 호소 표현).
-    "rule": 민감 단어가 있어도 피해 표현 없이 규정·절차만 물음 → 일반 규정 질문. None: 해당 없음.
-    '징계'는 일부러 민감 단어가 아님."""
+    "rule": 민감 단어가 있어도 피해를 말하지 않음 ("성희롱 예방교육 들어야 해요?") → 일반 규정 질문. None: 해당 없음.
+    단어가 아니라 상황(당했다·힘들다·신고하고 싶다)일 때만 민감으로 봐요. '징계'는 일부러 민감 단어가 아님.
+    민감으로 봐도 검색은 해요 (build.run_pipeline): 근거 + 상담 창구 안내."""
     if any(w in q for w in _SENSITIVE):
-        return "rule" if _RULE_ONLY_ASK.search(q) and not _VICTIM_MARKER.search(q) else "sensitive"
+        return "sensitive" if _VICTIM_MARKER.search(q) or _VICTIM_EXPR.search(q) else "rule"
     return "sensitive" if _VICTIM_EXPR.search(q) else None
 
 
@@ -126,6 +127,14 @@ _HR_WORDS = [
 # 다른 조직의 제도를 묻는 질문 (우리 회사 규정으로 답할 수 없음)
 _OTHER_ORG = re.compile(r"공무원|공공기관|타사|다른\s*회사|남의\s*회사|대기업|삼성|현대|엘지|LG|SK|카카오|네이버")
 _RULE_WORDS = ["규정", "기준", "조건", "받을 수", "어떻게", "방법", "절차", "계산", "왜"]
+# 내 데이터 단어가 있어도 규정을 물어보는 말투 → lookup이 아님 (검색 필요)
+#   가능·허용 ("써도 되나요", "휴직되나요"), 가정 ("안 쓰면", "치료받아야 하면"), 검증 ("받는 게 맞아?")
+_RULE_FORM = re.compile(
+    r"되나요|되나\?|될까|되는지|돼요\?|해도\s*돼|해도\s*되|써도\s*돼|써도\s*되|할\s*수\s*있|쓸\s*수\s*있"
+    r"|받나요|받나\?|(?:하면|쓰면|되면|으면)(?=\s|요|\?|$)"
+    r"|맞아\?|맞나|맞는\s*(?:거|건|지)|맞게|정상(?:인가|이야|이에요|일까)"
+    r"|건가요|는\s*건지|주는지"
+)
 _TOOL_WORDS = ["연차", "휴가 며칠 남", "복지포인트", "복지 포인트", "포인트", "급여", "월급", "실수령", "통상임금", "수당 얼마 나왔",
                "가족수당", "부양가족", "교육", "이수"]   # app/tools.py의 조회 도구와 같은 단어
 
@@ -200,7 +209,7 @@ def _classify_signals(s: HRState) -> tuple[bool, bool, bool, bool]:
         and not has_read_tool
         and not has_application_status
     )
-    asks_rule = any(w in intent_q for w in _RULE_WORDS)
+    asks_rule = any(w in intent_q for w in _RULE_WORDS) or bool(_RULE_FORM.search(intent_q))
     return is_self, has_tool, future_application_only, asks_rule
 
 
@@ -782,13 +791,26 @@ def refuse(s: HRState) -> HRState:
     return {"answer": msg, "kind": "refused", "chunks": []}
 
 
+SENSITIVE_NOTE = ("혼자 감당하지 않으셔도 돼요. 고충처리 담당자나 인사팀 상담 창구로 직접 상담하실 수 있고, "
+                  "신고 내용은 비밀이 보장되는 절차로 처리돼요.")
+
+
 def sensitive(s: HRState) -> HRState:
+    """근거를 찾지 못한 민감 질문: 상담 창구 안내만"""
     return {
         "answer": ("이 주제는 챗봇이 판단하지 않아요. 고충처리 담당자나 인사팀 상담 창구로 직접 상담해 주세요. "
                    "신고 내용은 비밀이 보장되는 절차로 처리돼요."),
         "kind": "sensitive",
         "chunks": [],
+        "verified": True,
     }
+
+
+def finish_sensitive(s: HRState) -> HRState:
+    """민감 질문 검색 답변 마무리: 근거가 있으면 답 + 상담 창구 안내, 없으면 상담 창구 안내만"""
+    if not s.get("verified") or s.get("kind") == "refused" or not s.get("answer"):
+        return sensitive(s)
+    return {"answer": f"{s['answer']}\n\n{SENSITIVE_NOTE}", "kind": "sensitive"}
 
 
 # ───────────── log: 감사 로그 ─────────────

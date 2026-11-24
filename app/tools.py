@@ -82,23 +82,25 @@ def get_training(emp_id: str) -> dict:
     return {"필수교육_미이수": todo, "이수과정수": sum(r["status"] == "이수" for r in rows), "전체과정수": len(rows)}
 
 
-_MARRIAGE_BENEFIT = ("결혼축하금", "결혼하는데", "결혼 예정")
+_MARRIAGE_BENEFIT = ("결혼축하금", "결혼하는데", "결혼 예정", "결혼하면", "결혼 경조금")
 
 # 질문에 이 단어가 있으면 이 도구를 써요 (코드가 고름, LLM이 고르지 않음)
 TOOL_KEYWORDS = [
     (("연차", "휴가 며칠 남", "휴가 몇"), "leave_balance", get_leave_balance),
     (("복지포인트", "복지 포인트", "포인트"), "welfare_points", get_welfare_points),
-    # 가족수당 금액은 급여(payroll)에 있어요. family는 부양가족 등록 자료(관계·인정 여부)만
-    (("급여", "월급", "수당 얼마 나왔", "시간외수당", "야근수당", "실수령", "통상임금", "수당 내역", "수당 금액"),
+    # 가족수당 금액은 급여(payroll)에 있어요. family는 부양가족 등록 자료(관계·나이·인정 여부)
+    (("급여", "월급", "수당 얼마 나왔", "시간외수당", "야근수당", "실수령", "통상임금", "수당 내역", "수당 금액",
+      "가족수당"),
      "payroll", get_payroll),
     # 결혼축하금은 생애 1회 한정 (팀 결정 2026-11-18): 본인 결혼 혜택 질문은 배우자 여부(family)와
     # 과거 경조금 신청(requests)을 같이 봐요
-    (("부양가족", "가족 등록", *_MARRIAGE_BENEFIT), "family", get_family),
+    # 가족수당은 금액(payroll)과 함께 누구 몫이 인정되는지(family: 관계·나이)도 봐야 답할 수 있어요
+    (("부양가족", "가족 등록", "가족수당", *_MARRIAGE_BENEFIT), "family", get_family),
     (("신청", "결재", "서류", *_MARRIAGE_BENEFIT), "requests", get_requests),
     (("교육", "법정교육", "이수"), "training", get_training),
 ]
-# 이 표현은 도구 단어를 포함해도 해당 도구로 보지 않아요 ("부양가족 수당"은 급여 조회)
-_TOOL_EXCLUDE = {"family": ("부양가족 수당", "부양가족수당")}
+# 이 표현은 도구 단어를 포함해도 해당 도구로 보지 않아요
+_TOOL_EXCLUDE: dict[str, tuple[str, ...]] = {}
 
 
 def tool_matches(name: str, words: tuple[str, ...], question: str) -> bool:

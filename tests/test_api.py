@@ -198,7 +198,7 @@ def test_future_application_questions_do_not_lookup(question, monkeypatch):
         ("이서준인데요, 복지포인트 얼마 남았어요?", "lookup", True),
         ("내 연차 몇 개 남았어?", "lookup", True),
         ("병가는 1년에 며칠까지 쓸 수 있어요?", "rule", True),
-        ("팀장한테 폭언 들은 이서준입니다.", "sensitive", False),
+        ("팀장한테 폭언 들은 이서준입니다.", "sensitive", True),      # 민감 질문도 근거를 찾아 답해요 (로그는 가림)
         ("박지현 과장 연봉이 궁금한 이서준입니다.", "refuse", False),
     ],
 )
@@ -324,6 +324,25 @@ def test_other_person_refused():
 def test_sensitive():
     r = ask("팀장한테 폭언을 들었는데 어떻게 해?")
     assert r["kind"] == "sensitive" and r["refused"] is False
+    assert "상담 창구" in r["answer"]
+
+
+def test_sensitive_is_searched_and_gets_counseling_note(monkeypatch):
+    retrieve_calls = []
+    original = nodes.retrieve
+    monkeypatch.setattr(nodes, "retrieve", lambda s: retrieve_calls.append(1) or original(s))
+    s = run_pipeline("E1584", "employee", "팀장한테 폭언을 들었는데 어떻게 해?")
+    assert retrieve_calls, "민감 질문도 검색해야 해요"
+    assert s["kind"] == "sensitive"
+    if s.get("chunks"):                      # 근거를 찾았으면 답 + 안내
+        assert s["answer"].endswith(nodes.SENSITIVE_NOTE)
+
+
+def test_sensitive_without_evidence_falls_back_to_counseling(monkeypatch):
+    monkeypatch.setattr(nodes, "retrieve", lambda s: {"chunks": []})
+    s = run_pipeline("E1584", "employee", "팀장한테 폭언을 들었는데 어떻게 해?")
+    assert s["kind"] == "sensitive" and s["chunks"] == []
+    assert "고충처리 담당자" in s["answer"]
 
 
 def test_health_reports_pseudo_key_status():
