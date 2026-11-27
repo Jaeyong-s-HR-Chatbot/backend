@@ -135,3 +135,45 @@ def test_token_type_ids_are_omitted_when_model_has_no_segment_embeddings(monkeyp
         assert scores[0] > 0.7
     finally:
         nli_classifier._reset_model()
+
+
+def test_mixed_utterance_is_checked_sentence_by_sentence(monkeypatch):
+    public = "첫 번째 안건은 2인 1조로 합의합니다."
+    secret = "재무 위원님은 끝까지 비용 때문에 반대하셨지만요."
+
+    def matrix(texts, columns=None):
+        return [_row(0.99, 0.1) if text == secret else _row(0.5, 0.1) for text in texts]
+
+    monkeypatch.setattr(nli_classifier, "_matrix", matrix)
+    result = nli_classifier.classify_utterances([f"{public} {secret}"])[0]
+    assert result["confidential"] is True
+    assert result["rule"] == "sentence"
+
+    monkeypatch.setattr(nli_classifier, "_matrix", lambda texts, columns=None: [_row(0.5, 0.1) for _ in texts])
+    assert not nli_classifier.classify_utterances([f"{public} 다음 안건입니다."])[0]["confidential"]
+
+
+def test_short_agreement_inherits_previous_confidential_utterance(monkeypatch):
+    def matrix(texts, columns=None):
+        if columns is not None:          # 앞 발언 가드: 민감해 보여 문맥 결합을 막음
+            return [[0.9] * len(columns) for _ in texts]
+        return [_row(0.99, 0.1) if text.startswith("저는 정직 1개월") else _row(0.2, 0.1) for text in texts]
+
+    monkeypatch.setattr(nli_classifier, "_matrix", matrix)
+    texts = ["저는 정직 1개월 의견입니다.", "저도 1개월 쪽입니다.", "그분, 신청한 적 있습니까?", "저도 궁금한데요?"]
+    results = nli_classifier.classify_utterances(texts, [""] + texts[:-1])
+    assert results[1]["confidential"] is True and results[1]["rule"] == "inherit"
+    assert results[1]["type"] == results[0]["type"]
+    assert results[2]["confidential"] is False          # "저도"로 시작하지 않음
+    assert results[3]["confidential"] is False          # 앞 발언이 기밀 아님
+
+
+def test_agreement_does_not_inherit_when_question(monkeypatch):
+    def matrix(texts, columns=None):
+        if columns is not None:
+            return [[0.9] * len(columns) for _ in texts]
+        return [_row(0.99, 0.1) if text.startswith("저는 정직") else _row(0.2, 0.1) for text in texts]
+
+    monkeypatch.setattr(nli_classifier, "_matrix", matrix)
+    texts = ["저는 정직 1개월 의견입니다.", "저도 그렇게 봐야 하나요?"]
+    assert nli_classifier.classify_utterances(texts, ["", texts[0]])[1]["confidential"] is False

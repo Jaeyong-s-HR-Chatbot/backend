@@ -11,6 +11,12 @@ log = logging.getLogger(__name__)
 THRESHOLD = 0.98
 SHORT = 25
 GUARD = 0.5
+# 판정 보완 (재학습 없음, v4 개발용으로 조정 · v5 로 확인)
+# - 이어받기: 앞 발언이 기밀이고 지금 발언이 "저도·나도·저 역시"로 시작하는 짧은 동조 발언이면 앞 판정을 이어받음
+# - 문장 단위: 기밀이 아니라고 나온 여러 문장 발언은 문장별로 다시 판정해 하나라도 기밀이면 기밀
+INHERIT_MAX = 40
+INHERIT_HEAD = re.compile(r"^\s*(저도|나도|저 역시)")
+SENTENCE_SPLIT = re.compile(r"(?<=[.?!…])\s+")
 BATCH_SIZE = 64
 
 # Cell 11: development-set-selected hypotheses, three for each type.
@@ -210,16 +216,39 @@ def classify_utterances(texts, previous_texts=None):
             for index, row in zip(eligible, combined):
                 matrix[index] = row
 
-    results = []
-    for row in matrix:
-        per_type = _type_scores(row)
-        kind = max(per_type, key=per_type.get)
-        score = per_type[kind]
-        progress_score = max(row[_TYPE_COLUMN_COUNT:])
-        results.append({
-            "confidential": score >= THRESHOLD and score > progress_score,
-            "score": score,
-            "type": kind,
-            "progress_score": progress_score,
-        })
+    results = [_decide(row) for row in matrix]
+
+    # 문장 단위: 공개 문장과 기밀 문장이 섞인 발언 (예: 합의 내용 + 위원별 반대 의견)
+    sentences = [
+        (index, part)
+        for index, result in enumerate(results) if not result["confidential"]
+        for parts in [SENTENCE_SPLIT.split(texts[index].strip())] if len(parts) >= 2
+        for part in parts if len(part.strip()) >= 4
+    ]
+    if sentences:
+        for (index, _), row in zip(sentences, _matrix([_clean(part) for _, part in sentences])):
+            found = _decide(row)
+            if found["confidential"] and not results[index]["confidential"]:
+                results[index] = dict(found, rule="sentence")
+
+    # 이어받기: "저도 1개월 쪽입니다." 처럼 앞 기밀 발언에 동조하는 짧은 발언
+    for index in range(1, len(results)):
+        text = current[index]
+        if (not results[index]["confidential"] and results[index - 1]["confidential"]
+                and len(text) <= INHERIT_MAX and INHERIT_HEAD.match(text) and not text.endswith("?")):
+            results[index] = dict(results[index], confidential=True,
+                                  type=results[index - 1]["type"], rule="inherit")
     return results
+
+
+def _decide(row):
+    per_type = _type_scores(row)
+    kind = max(per_type, key=per_type.get)
+    score = per_type[kind]
+    progress_score = max(row[_TYPE_COLUMN_COUNT:])
+    return {
+        "confidential": score >= THRESHOLD and score > progress_score,
+        "score": score,
+        "type": kind,
+        "progress_score": progress_score,
+    }
