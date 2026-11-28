@@ -177,3 +177,31 @@ def test_agreement_does_not_inherit_when_question(monkeypatch):
     monkeypatch.setattr(nli_classifier, "_matrix", matrix)
     texts = ["저는 정직 1개월 의견입니다.", "저도 그렇게 봐야 하나요?"]
     assert nli_classifier.classify_utterances(texts, ["", texts[0]])[1]["confidential"] is False
+
+
+def _thread_matrix(progress=0.1):
+    def matrix(texts, columns=None):
+        if columns is not None:
+            return [[0.9] * len(columns) for _ in texts]
+        return [_row(0.995, 0.1) if text.startswith("가상 기밀") else _row(0.2, progress) for text in texts]
+    return matrix
+
+
+def test_reply_within_two_utterances_inherits_confidential_type(monkeypatch):
+    monkeypatch.setattr(nli_classifier, "_matrix", _thread_matrix())
+    texts = ["가상 기밀 발언입니다.", "그 부분은 제도상 문제없습니다.", "그리고 탈퇴가 아니라 다시 들어왔어요."]
+    results = nli_classifier.classify_utterances(texts)
+    assert results[1]["confidential"] is False          # 이어받는 말로 시작하지 않음
+    assert results[2]["confidential"] is True and results[2]["rule"] == "thread"
+    assert results[2]["type"] == results[0]["type"]
+
+
+@pytest.mark.parametrize("texts, progress", [
+    (["가상 기밀 발언입니다.", "그건 제가 알고 있었어요?"], 0.1),                       # 질문
+    (["가상 기밀 발언입니다.", "네, 이상으로 마치겠습니다."], 0.9),                     # 진행 발언
+    (["가상 기밀 발언입니다.", "공개 발언", "공개 발언", "그건 제가 압니다."], 0.1),      # 세 발언 이상 떨어짐
+    (["공개 발언입니다.", "그건 제가 압니다."], 0.1),                                  # 앞에 기밀 없음
+])
+def test_reply_does_not_inherit_without_all_conditions(monkeypatch, texts, progress):
+    monkeypatch.setattr(nli_classifier, "_matrix", _thread_matrix(progress))
+    assert nli_classifier.classify_utterances(texts)[-1]["confidential"] is False

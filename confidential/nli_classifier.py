@@ -16,6 +16,12 @@ GUARD = 0.5
 # - 문장 단위: 기밀이 아니라고 나온 여러 문장 발언은 문장별로 다시 판정해 하나라도 기밀이면 기밀
 INHERIT_MAX = 40
 INHERIT_HEAD = re.compile(r"^\s*(저도|나도|저 역시)")
+# - 이어지는 답변: 앞 1~2개 발언 중 기밀이 있고, 지금 발언이 "그건·그분·그리고·네,·저도…"로 이어지며
+#   질문이 아니고 진행 발언 점수도 낮으면 앞 판정을 이어받음 (예: "탈퇴가 아니라 다시 들어왔어요")
+THREAD_HEAD = re.compile(r"^\s*(?:그건|그거|그게|그분|그 사람|그 친구|그리고|네[,.]|예[,.]|저도|나도|맞아요|맞습니다|아니요|아뇨)")
+THREAD_WINDOW = 2
+THREAD_MAX = 60
+THREAD_PROGRESS_MAX = 0.5
 SENTENCE_SPLIT = re.compile(r"(?<=[.?!…])\s+")
 BATCH_SIZE = 64
 
@@ -239,6 +245,17 @@ def classify_utterances(texts, previous_texts=None):
                 and len(text) <= INHERIT_MAX and INHERIT_HEAD.match(text) and not text.endswith("?")):
             results[index] = dict(results[index], confidential=True,
                                   type=results[index - 1]["type"], rule="inherit")
+
+    # 이어지는 답변: 앞 기밀 발언에 대한 답이나 덧붙임 (진행 발언은 진행 점수로 거름)
+    before = list(results)
+    for index, text in enumerate(current):
+        if (before[index]["confidential"] or text.endswith("?") or len(text) > THREAD_MAX
+                or not THREAD_HEAD.match(text) or before[index]["progress_score"] >= THREAD_PROGRESS_MAX):
+            continue
+        prior = [j for j in range(max(0, index - THREAD_WINDOW), index) if before[j]["confidential"]]
+        if prior:
+            results[index] = dict(results[index], confidential=True,
+                                  type=before[prior[-1]]["type"], rule="thread")
     return results
 
 
