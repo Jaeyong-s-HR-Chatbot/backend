@@ -116,7 +116,7 @@ def search(emp_id, conf_type, question):
         rendered = segment_view(mode, item)
         text = "".join(part.get("text", "[가림]") for part in rendered)
         if mode != "full":
-            hidden.extend((entity["text"], "[이름]" if entity.get("type") == "PS" else "[식별정보]")
+            hidden.extend((entity["text"], {"PS": "[이름]", "OG": "[부서]"}.get(entity.get("type"), "[식별정보]"))
                           for entity in row["entities"] if entity.get("text"))
             if row["sen"]:
                 hidden.append((row["text"], "[가림]"))
