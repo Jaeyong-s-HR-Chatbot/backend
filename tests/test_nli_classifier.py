@@ -14,15 +14,15 @@ def _row(kind_score=0.0, progress_score=0.0):
 
 
 def test_b_plus_p0_requires_threshold_and_beats_progress(monkeypatch):
-    monkeypatch.setattr(nli_classifier, "_matrix", lambda texts: [_row(0.98, 0.97) for _ in texts])
+    monkeypatch.setattr(nli_classifier, "_matrix", lambda texts: [_row(0.99, 0.98) for _ in texts])
     result = nli_classifier.classify_utterances(["가상 발언"])[0]
     assert result == {
-        "confidential": True, "score": 0.98, "type": "C1", "progress_score": 0.97,
+        "confidential": True, "score": 0.99, "type": "C1", "progress_score": 0.98,
     }
 
-    monkeypatch.setattr(nli_classifier, "_matrix", lambda texts: [_row(0.98, 0.98) for _ in texts])
+    monkeypatch.setattr(nli_classifier, "_matrix", lambda texts: [_row(0.99, 0.99) for _ in texts])
     assert not nli_classifier.classify_utterances(["가상 발언"])[0]["confidential"]
-    monkeypatch.setattr(nli_classifier, "_matrix", lambda texts: [_row(0.979, 0.1) for _ in texts])
+    monkeypatch.setattr(nli_classifier, "_matrix", lambda texts: [_row(0.989, 0.1) for _ in texts])
     assert not nli_classifier.classify_utterances(["가상 발언"])[0]["confidential"]
 
 
