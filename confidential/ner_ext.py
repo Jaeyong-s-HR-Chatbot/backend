@@ -13,6 +13,10 @@ OG_SIL = {"비서실", "감사실", "기획실", "홍보실", "안전실"}      
 OG_STOP = {"이번팀", "그팀", "우리팀", "팀"}
 DEPT_SUFFIX = re.compile(r"(팀|본부|실|부|처|센터|사업소)$")
 
+# 부서 바로 뒤에 특정한 한 사람을 가리키는 말이 오면 부서만으로도 그 사람이 드러날 수 있음 ("건축설비팀 작업자 한 명")
+PERSON_REF = re.compile(r"작업자|직원|정비원|기관사|승무원|역무원|위원님?|반장|담당자|한 명|한 분|한 사람|1명")
+PERSON_GAP = 8  # 부서 끝과 사람 지칭 사이 최대 글자 수
+
 SEN_HEALTH = re.compile(r"투석|디스크|수술|입원|진단|우울증|질환|암 |치료|병가를|몸이 안 좋|몸도 안 좋|아프|통원|약을 먹|장애")
 SEN_UNION = re.compile(r"노조에 가입|노조 가입|노조 활동|조합원|노조를 탈퇴")
 SEN_NOT = re.compile(r"규정|제도|일정|공지|취업규칙|설문")
@@ -81,6 +85,17 @@ def find_qi(text, og, pos, counts, k=K):
     return out
 
 
+def find_dept_ref(text, og):
+    """사람 지칭이 바로 뒤따르는 부서 개체 → 가릴 부서 목록 [("OG", 시작, 끝, 부서)]"""
+    out = []
+    for o in og:
+        window = text[o[2]:o[2] + PERSON_GAP + 6]
+        m = PERSON_REF.search(window)
+        if m and m.start() <= PERSON_GAP and not re.search(r"[.?!]", window[:m.start()]):
+            out.append(tuple(o))
+    return out
+
+
 def detect(text, model_og=(), counts=None):
     counts = load_counts() if counts is None else counts
     og, pos = find_og(text, model_og, sorted({d for d, _ in counts}, key=len, reverse=True)), find_pos(text)
@@ -103,7 +118,7 @@ def mask_all(text, ps_id=(), qi=(), sen=None, hide_sen=False):
     hide_sen=True면 민감정보 문장은 통째로 [민감정보]로 바꿈 (권한 없는 사람에게 보여 줄 때)."""
     if hide_sen and sen:
         return f"[민감정보: {sen}]"
-    rep = {"PS": "[이름]", "ID": "[식별정보]"}
+    rep = {"PS": "[이름]", "ID": "[식별정보]", "OG": "[부서]"}
     spans = [(s, e, rep[t]) for t, s, e, *_ in ps_id if t in rep]
     for o, p, _, hide in qi:
         if hide:

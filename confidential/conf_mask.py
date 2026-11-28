@@ -24,7 +24,9 @@ def detect_text(text, chunk, field, tok, model, counts):
     ps = [x for x in ps_og if x[0] == "PS"]
     ids = [x for x in ner_rules_id.predict(text, chunk.get("article", ""), field) if x[0] == "ID"]
     ext = ner_ext.detect(text, [x for x in ps_og if x[0] == "OG"], counts)
-    return dict(entities=ps + ids, og=ext["og"], pos=ext["pos"], sen=ext["sen"], qi=ext["qi"])
+    in_qi = {tuple(o) for o, _, _, hide in ext["qi"] if hide}
+    dept = [o for o in ner_ext.find_dept_ref(text, ext["og"]) if o not in in_qi]
+    return dict(entities=ps + ids + dept, og=ext["og"], pos=ext["pos"], sen=ext["sen"], qi=ext["qi"])
 
 
 def mask_chunk(chunk, tok, model, counts):
